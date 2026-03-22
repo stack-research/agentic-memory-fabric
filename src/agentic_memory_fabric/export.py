@@ -24,6 +24,7 @@ def export_sbom_snapshot(
             "last_event_id": record.last_event_id,
             "why_sound": record.why_sound,
             "lifecycle_state": record.lifecycle_state,
+            "signature_state": record.signature_state,
             "denial_reason": record.denial_reason,
             "override_used": record.override_used,
         }

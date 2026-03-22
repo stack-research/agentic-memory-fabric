@@ -21,12 +21,17 @@ class MemoryState:
     last_event_id: str
     last_sequence: int
     last_event_type: str
+    signature_state: str
     last_tick: int
     payload_hash: str
     previous_events: tuple[str, ...]
 
 
-def replay_events(events: tuple[EventEnvelope, ...] | list[EventEnvelope]) -> dict[str, MemoryState]:
+def replay_events(
+    events: tuple[EventEnvelope, ...] | list[EventEnvelope],
+    *,
+    signature_states: dict[str, str] | None = None,
+) -> dict[str, MemoryState]:
     materialized: dict[str, MemoryState] = {}
 
     for event in events:
@@ -55,6 +60,11 @@ def replay_events(events: tuple[EventEnvelope, ...] | list[EventEnvelope]) -> di
             last_event_id=event.event_id,
             last_sequence=event.sequence,
             last_event_type=event.event_type,
+            signature_state=(
+                signature_states[event.event_id]
+                if signature_states is not None and event.event_id in signature_states
+                else ("unsigned" if event.signature is None else "invalid")
+            ),
             # Prefer explicit logical tick and fall back to sequence for deterministic clocking.
             last_tick=event.timestamp.tick if event.timestamp.tick is not None else event.sequence,
             payload_hash=event.payload_hash,

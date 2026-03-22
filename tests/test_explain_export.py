@@ -89,7 +89,9 @@ class ExplainExportTests(unittest.TestCase):
         self.assertEqual(trace[1]["previous_events"], ["33333333-3333-4333-8333-333333333333"])
 
     def test_snapshot_default_excludes_quarantined_expired_deleted(self) -> None:
-        state_map = replay_events(self._events())
+        events = self._events()
+        signature_states = {event.event_id: "verified" for event in events}
+        state_map = replay_events(events, signature_states=signature_states)
         snapshot = export_sbom_snapshot(state_map, PolicyContext())
         self.assertEqual(snapshot["artifact_type"], "memory_sbom_snapshot")
         self.assertEqual(snapshot["count"], 1)
@@ -99,7 +101,9 @@ class ExplainExportTests(unittest.TestCase):
         )
 
     def test_snapshot_override_includes_denied_states(self) -> None:
-        state_map = replay_events(self._events())
+        events = self._events()
+        signature_states = {event.event_id: "verified" for event in events}
+        state_map = replay_events(events, signature_states=signature_states)
         snapshot = export_sbom_snapshot(
             state_map,
             PolicyContext(capabilities=frozenset({OVERRIDE_CAPABILITY})),
@@ -115,6 +119,12 @@ class ExplainExportTests(unittest.TestCase):
                 "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
             },
         )
+
+    def test_snapshot_default_denies_unsigned_signature_state(self) -> None:
+        events = self._events()
+        state_map = replay_events(events)
+        snapshot = export_sbom_snapshot(state_map, PolicyContext())
+        self.assertEqual(snapshot["count"], 0)
 
     def test_provenance_log_includes_full_history_and_range_filter(self) -> None:
         events = self._events()

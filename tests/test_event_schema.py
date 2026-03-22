@@ -50,6 +50,8 @@ class EventSchemaTests(unittest.TestCase):
                 set(event_types)
             )
         )
+        self.assertIn("signature", schema["properties"])
+        self.assertIn("attestation", schema["properties"])
 
     def test_validate_event_envelope_accepts_valid_shape(self) -> None:
         validate_event_envelope(_valid_event())
@@ -71,4 +73,29 @@ class EventSchemaTests(unittest.TestCase):
         event = _valid_event()
         event["payload_hash"] = "sha256:not-hex"
         with self.assertRaisesRegex(ValueError, "payload_hash"):
+            validate_event_envelope(event)
+
+    def test_validate_event_envelope_accepts_signature_and_attestation(self) -> None:
+        event = _valid_event()
+        event["signature"] = {
+            "alg": "hmac-sha256",
+            "key_id": "dev-key",
+            "sig": "YWJjZA==",
+        }
+        event["attestation"] = {
+            "issuer": "security-service",
+            "issued_at": "2026-03-22T00:00:00Z",
+            "trust_level": "high",
+            "claims": {"scope": "test"},
+        }
+        validate_event_envelope(event)
+
+    def test_validate_event_envelope_rejects_invalid_signature_algorithm(self) -> None:
+        event = _valid_event()
+        event["signature"] = {
+            "alg": "rsa-sha256",
+            "key_id": "dev-key",
+            "sig": "YWJjZA==",
+        }
+        with self.assertRaisesRegex(ValueError, "signature.alg"):
             validate_event_envelope(event)

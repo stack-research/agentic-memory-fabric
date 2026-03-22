@@ -16,6 +16,7 @@ class RetrievalRecord:
     last_event_id: str
     why_sound: str
     lifecycle_state: str
+    signature_state: str
     denial_reason: str | None
     override_used: bool
 
@@ -28,6 +29,7 @@ def _to_retrieval_record(state: MemoryState, *, why_sound: str, denial_reason: s
         last_event_id=state.last_event_id,
         why_sound=why_sound,
         lifecycle_state=state.lifecycle_state,
+        signature_state=state.signature_state,
         denial_reason=denial_reason,
         override_used=override_used,
     )

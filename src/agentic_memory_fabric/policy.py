@@ -55,6 +55,10 @@ def evaluate_retrieval_policy(state: MemoryState, policy_context: PolicyContext)
         )
         if not freshness.is_fresh:
             denial_reason = "decay_expired_default_deny"
+    elif state.signature_state == "unsigned":
+        denial_reason = "signature_missing_default_deny"
+    elif state.signature_state == "invalid":
+        denial_reason = "signature_invalid_default_deny"
 
     if denial_reason is None:
         return PolicyDecision(allowed=True, why_sound="trusted_active_under_policy")

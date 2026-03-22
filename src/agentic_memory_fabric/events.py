@@ -27,6 +27,8 @@ VALID_ACTOR_KINDS = frozenset({"user", "service", "tool"})
 VALID_EVIDENCE_TYPES = frozenset(
     {"url", "message_id", "file_path", "tool_run_id", "opaque"}
 )
+VALID_SIGNATURE_ALGS = frozenset({"hmac-sha256"})
+VALID_ATTESTATION_TRUST_LEVELS = frozenset({"low", "medium", "high"})
 
 
 def _as_uuid(value: str, *, field_name: str) -> str:
@@ -142,6 +144,63 @@ class TrustTransition:
 
 
 @dataclass(frozen=True)
+class EventSignature:
+    alg: str
+    key_id: str
+    sig: str
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "EventSignature":
+        alg = _require_non_empty_string(data.get("alg"), field_name="signature.alg")
+        if alg not in VALID_SIGNATURE_ALGS:
+            raise ValueError(f"signature.alg must be one of {sorted(VALID_SIGNATURE_ALGS)}")
+        key_id = _require_non_empty_string(data.get("key_id"), field_name="signature.key_id")
+        sig = _require_non_empty_string(data.get("sig"), field_name="signature.sig")
+        return cls(alg=alg, key_id=key_id, sig=sig)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"alg": self.alg, "key_id": self.key_id, "sig": self.sig}
+
+
+@dataclass(frozen=True)
+class Attestation:
+    issuer: str
+    issued_at: str
+    trust_level: str
+    claims: Mapping[str, Any] | None = None
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "Attestation":
+        issuer = _require_non_empty_string(data.get("issuer"), field_name="attestation.issuer")
+        issued_at = _validate_iso_datetime(
+            _require_non_empty_string(data.get("issued_at"), field_name="attestation.issued_at"),
+            field_name="attestation.issued_at",
+        )
+        trust_level = _require_non_empty_string(
+            data.get("trust_level"), field_name="attestation.trust_level"
+        )
+        if trust_level not in VALID_ATTESTATION_TRUST_LEVELS:
+            raise ValueError(
+                "attestation.trust_level must be one of "
+                f"{sorted(VALID_ATTESTATION_TRUST_LEVELS)}"
+            )
+        claims = data.get("claims")
+        if claims is not None and not isinstance(claims, Mapping):
+            raise ValueError("attestation.claims must be an object when provided")
+        return cls(issuer=issuer, issued_at=issued_at, trust_level=trust_level, claims=claims)
+
+    def to_dict(self) -> dict[str, Any]:
+        out: dict[str, Any] = {
+            "issuer": self.issuer,
+            "issued_at": self.issued_at,
+            "trust_level": self.trust_level,
+        }
+        if self.claims is not None:
+            out["claims"] = dict(self.claims)
+        return out
+
+
+@dataclass(frozen=True)
 class EventTimestamp:
     wall_time: str
     tick: int | None = None
@@ -176,6 +235,8 @@ class EventEnvelope:
     payload_hash: str = ""
     evidence_refs: tuple[EvidenceRef, ...] = field(default_factory=tuple)
     trust_transition: TrustTransition | None = None
+    signature: EventSignature | None = None
+    attestation: Attestation | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "EventEnvelope":
@@ -189,6 +250,10 @@ class EventEnvelope:
             if trust_transition_data is not None
             else None
         )
+        signature_data = data.get("signature")
+        signature = EventSignature.from_dict(signature_data) if signature_data is not None else None
+        attestation_data = data.get("attestation")
+        attestation = Attestation.from_dict(attestation_data) if attestation_data is not None else None
         return cls(
             event_id=data["event_id"],
             sequence=data["sequence"],
@@ -200,6 +265,8 @@ class EventEnvelope:
             payload_hash=data["payload_hash"],
             evidence_refs=evidence_refs,
             trust_transition=trust_transition,
+            signature=signature,
+            attestation=attestation,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -217,6 +284,10 @@ class EventEnvelope:
             out["evidence_refs"] = [ref.to_dict() for ref in self.evidence_refs]
         if self.trust_transition is not None:
             out["trust_transition"] = self.trust_transition.to_dict()
+        if self.signature is not None:
+            out["signature"] = self.signature.to_dict()
+        if self.attestation is not None:
+            out["attestation"] = self.attestation.to_dict()
         return out
 
 
@@ -285,3 +356,15 @@ def validate_event_envelope(data: Mapping[str, Any]) -> None:
         if not isinstance(trust_transition, Mapping):
             raise ValueError("trust_transition must be an object when provided")
         TrustTransition.from_dict(trust_transition)
+
+    signature = data.get("signature")
+    if signature is not None:
+        if not isinstance(signature, Mapping):
+            raise ValueError("signature must be an object when provided")
+        EventSignature.from_dict(signature)
+
+    attestation = data.get("attestation")
+    if attestation is not None:
+        if not isinstance(attestation, Mapping):
+            raise ValueError("attestation must be an object when provided")
+        Attestation.from_dict(attestation)

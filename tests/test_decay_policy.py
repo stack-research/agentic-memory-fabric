@@ -23,6 +23,7 @@ class DecayPolicyTests(unittest.TestCase):
             last_event_id="11111111-1111-4111-8111-111111111111",
             last_sequence=1,
             last_event_type="created",
+            signature_state="verified",
             last_tick=last_tick,
             payload_hash="sha256:" + ("a" * 64),
             previous_events=(),

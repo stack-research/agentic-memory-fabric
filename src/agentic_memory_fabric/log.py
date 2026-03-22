@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Callable
 
 from .events import EventEnvelope
 
@@ -11,8 +12,14 @@ from .events import EventEnvelope
 class AppendOnlyEventLog:
     _events: list[EventEnvelope] = field(default_factory=list)
     _event_ids: set[str] = field(default_factory=set)
+    _signature_states: dict[str, str] = field(default_factory=dict)
 
-    def append(self, event: EventEnvelope) -> None:
+    def append(
+        self,
+        event: EventEnvelope,
+        *,
+        signature_verifier: Callable[[EventEnvelope], str] | None = None,
+    ) -> None:
         expected_sequence = len(self._events) + 1
         if event.sequence != expected_sequence:
             raise ValueError(
@@ -22,9 +29,19 @@ class AppendOnlyEventLog:
             raise ValueError(f"duplicate event_id: {event.event_id}")
         self._events.append(event)
         self._event_ids.add(event.event_id)
+        if signature_verifier is not None:
+            self._signature_states[event.event_id] = signature_verifier(event)
+        else:
+            self._signature_states[event.event_id] = "unsigned" if event.signature is None else "invalid"
 
     def all_events(self) -> tuple[EventEnvelope, ...]:
         return tuple(self._events)
 
     def __len__(self) -> int:
         return len(self._events)
+
+    def signature_states(self) -> dict[str, str]:
+        return dict(self._signature_states)
+
+    def signature_state_for_event(self, event_id: str) -> str | None:
+        return self._signature_states.get(event_id)

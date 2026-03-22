@@ -1,8 +1,17 @@
 """Agentic Memory Fabric control-plane package."""
 
+from .crypto import (
+    SUPPORTED_SIGNATURE_ALGS,
+    SignatureState,
+    canonicalize_event_for_signing,
+    sign_event,
+    verify_event_signature,
+)
 from .events import (
     Actor,
+    Attestation,
     EventEnvelope,
+    EventSignature,
     EventTimestamp,
     EvidenceRef,
     TrustTransition,
@@ -19,8 +28,10 @@ from .retrieval import RetrievalRecord, get, query
 __all__ = [
     "Actor",
     "AppendOnlyEventLog",
+    "Attestation",
     "DecayPolicy",
     "EventEnvelope",
+    "EventSignature",
     "EventTimestamp",
     "EvidenceRef",
     "FreshnessDecision",
@@ -28,7 +39,10 @@ __all__ = [
     "PolicyContext",
     "PolicyDecision",
     "RetrievalRecord",
+    "SUPPORTED_SIGNATURE_ALGS",
+    "SignatureState",
     "TrustTransition",
+    "canonicalize_event_for_signing",
     "compute_age_ticks",
     "evaluate_retrieval_policy",
     "evaluate_freshness",
@@ -38,5 +52,7 @@ __all__ = [
     "get",
     "query",
     "replay_events",
+    "sign_event",
     "validate_event_envelope",
+    "verify_event_signature",
 ]

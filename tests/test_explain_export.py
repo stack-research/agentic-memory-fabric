@@ -10,6 +10,7 @@ if str(SRC_ROOT) not in sys.path:
 from agentic_memory_fabric.events import EventEnvelope
 from agentic_memory_fabric.explain import explain
 from agentic_memory_fabric.export import export_provenance_log, export_sbom_snapshot
+from agentic_memory_fabric.importer import import_records
 from agentic_memory_fabric.policy import OVERRIDE_CAPABILITY, PolicyContext
 from agentic_memory_fabric.replay import replay_events
 
@@ -125,6 +126,23 @@ class ExplainExportTests(unittest.TestCase):
         state_map = replay_events(events)
         snapshot = export_sbom_snapshot(state_map, PolicyContext())
         self.assertEqual(snapshot["count"], 0)
+
+    def test_provenance_slice_contains_imported_events(self) -> None:
+        imported_events = import_records(
+            [
+                {
+                    "memory_id": "12121212-1212-4212-8212-121212121212",
+                    "payload": {"k": "v"},
+                    "source_id": "legacy-seed",
+                }
+            ],
+            actor={"id": "migration-bot", "kind": "service"},
+            start_sequence=1,
+            default_timestamp="2026-03-22T00:00:00Z",
+        )
+        prov = export_provenance_log(imported_events)
+        self.assertEqual(prov["count"], 1)
+        self.assertEqual(prov["events"][0]["event_type"], "imported")
 
     def test_provenance_log_includes_full_history_and_range_filter(self) -> None:
         events = self._events()

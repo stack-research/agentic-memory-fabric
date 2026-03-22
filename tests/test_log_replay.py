@@ -12,21 +12,28 @@ from agentic_memory_fabric.log import AppendOnlyEventLog
 from agentic_memory_fabric.replay import LIFECYCLE_DELETED, replay_events
 
 
-def _event(sequence: int, event_id: str, event_type: str, previous_events: list[str]) -> EventEnvelope:
+def _event(
+    sequence: int,
+    event_id: str,
+    event_type: str,
+    previous_events: list[str],
+    evidence_refs: list[dict] | None = None,
+) -> EventEnvelope:
     payload_char = format(sequence % 16, "x")
     payload_hash = "sha256:" + (payload_char * 64)
-    return EventEnvelope.from_dict(
-        {
-            "event_id": event_id,
-            "sequence": sequence,
-            "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": sequence},
-            "actor": {"id": "svc-memory", "kind": "service"},
-            "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-            "event_type": event_type,
-            "previous_events": previous_events,
-            "payload_hash": payload_hash,
-        }
-    )
+    event_data = {
+        "event_id": event_id,
+        "sequence": sequence,
+        "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": sequence},
+        "actor": {"id": "svc-memory", "kind": "service"},
+        "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "event_type": event_type,
+        "previous_events": previous_events,
+        "payload_hash": payload_hash,
+    }
+    if evidence_refs is not None:
+        event_data["evidence_refs"] = evidence_refs
+    return EventEnvelope.from_dict(event_data)
 
 
 class LogReplayTests(unittest.TestCase):
@@ -97,3 +104,15 @@ class LogReplayTests(unittest.TestCase):
         self.assertEqual(s4.trust_state, "expired")
         self.assertEqual(s5.trust_state, "expired")
         self.assertEqual(s5.lifecycle_state, LIFECYCLE_DELETED)
+
+    def test_imported_event_is_treated_as_trusted_in_replay(self) -> None:
+        imported = _event(
+            1,
+            "99999999-9999-4999-8999-999999999999",
+            "imported",
+            [],
+            evidence_refs=[{"type": "opaque", "ref": "import:seed-1"}],
+        )
+        state = replay_events([imported])["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]
+        self.assertEqual(state.trust_state, "trusted")
+        self.assertEqual(state.last_event_type, "imported")

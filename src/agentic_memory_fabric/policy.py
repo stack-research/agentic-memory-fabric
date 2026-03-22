@@ -41,11 +41,11 @@ def evaluate_retrieval_policy(state: MemoryState, policy_context: PolicyContext)
 
     if state.lifecycle_state == LIFECYCLE_DELETED:
         denial_reason = "deleted_memory_default_deny"
-    elif state.trust_state == "quarantined":
+    if denial_reason is None and state.trust_state == "quarantined":
         denial_reason = "quarantined_memory_default_deny"
-    elif state.trust_state == "expired":
+    if denial_reason is None and state.trust_state == "expired":
         denial_reason = "expired_memory_default_deny"
-    elif policy_context.decay_policy is not None:
+    if denial_reason is None and policy_context.decay_policy is not None:
         if policy_context.current_tick is None:
             raise ValueError("current_tick is required when decay_policy is configured")
         freshness = evaluate_freshness(
@@ -55,9 +55,9 @@ def evaluate_retrieval_policy(state: MemoryState, policy_context: PolicyContext)
         )
         if not freshness.is_fresh:
             denial_reason = "decay_expired_default_deny"
-    elif state.signature_state == "unsigned":
+    if denial_reason is None and state.signature_state == "unsigned":
         denial_reason = "signature_missing_default_deny"
-    elif state.signature_state == "invalid":
+    if denial_reason is None and state.signature_state == "invalid":
         denial_reason = "signature_invalid_default_deny"
 
     if denial_reason is None:

@@ -368,3 +368,7 @@ def validate_event_envelope(data: Mapping[str, Any]) -> None:
         if not isinstance(attestation, Mapping):
             raise ValueError("attestation must be an object when provided")
         Attestation.from_dict(attestation)
+
+    if event_type == "imported":
+        if evidence_refs is None or len(evidence_refs) == 0:
+            raise ValueError("imported events must include at least one evidence_ref")

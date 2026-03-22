@@ -20,6 +20,7 @@ from .events import (
 from .decay import DecayPolicy, FreshnessDecision, compute_age_ticks, evaluate_freshness
 from .explain import explain
 from .export import export_provenance_log, export_sbom_snapshot
+from .importer import append_imported_records, import_records
 from .log import AppendOnlyEventLog
 from .policy import PolicyContext, PolicyDecision, evaluate_retrieval_policy
 from .replay import MemoryState, replay_events
@@ -50,6 +51,8 @@ __all__ = [
     "export_provenance_log",
     "export_sbom_snapshot",
     "get",
+    "append_imported_records",
+    "import_records",
     "query",
     "replay_events",
     "sign_event",

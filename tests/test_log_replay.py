@@ -1,5 +1,6 @@
 import pathlib
 import sys
+import tempfile
 import unittest
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -10,6 +11,7 @@ if str(SRC_ROOT) not in sys.path:
 from agentic_memory_fabric.events import EventEnvelope
 from agentic_memory_fabric.log import AppendOnlyEventLog
 from agentic_memory_fabric.replay import LIFECYCLE_DELETED, replay_events
+from agentic_memory_fabric.sqlite_store import SQLiteEventLog
 
 
 def _event(
@@ -116,3 +118,70 @@ class LogReplayTests(unittest.TestCase):
         state = replay_events([imported])["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]
         self.assertEqual(state.trust_state, "trusted")
         self.assertEqual(state.last_event_type, "imported")
+
+    def test_sqlite_log_persists_events_and_signature_state_across_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = pathlib.Path(tmpdir) / "events.db"
+            first = _event(1, "11111111-1111-4111-8111-111111111111", "created", [])
+            second = _event(
+                2,
+                "22222222-2222-4222-8222-222222222222",
+                "updated",
+                ["11111111-1111-4111-8111-111111111111"],
+            )
+
+            log = SQLiteEventLog(db_path)
+            try:
+                log.append(first, signature_verifier=lambda _: "verified")
+                log.append(second, signature_verifier=lambda _: "invalid")
+            finally:
+                log.close()
+
+            reopened = SQLiteEventLog(db_path)
+            try:
+                self.assertEqual(len(reopened), 2)
+                events = reopened.all_events()
+                self.assertEqual(events[0].event_id, first.event_id)
+                self.assertEqual(events[1].event_id, second.event_id)
+                self.assertEqual(reopened.signature_state_for_event(first.event_id), "verified")
+                self.assertEqual(reopened.signature_state_for_event(second.event_id), "invalid")
+                state = replay_events(events, signature_states=reopened.signature_states())
+                self.assertEqual(
+                    state["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"].signature_state,
+                    "invalid",
+                )
+            finally:
+                reopened.close()
+
+    def test_sqlite_log_enforces_invariants_after_reopen(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = pathlib.Path(tmpdir) / "events.db"
+            first = _event(1, "11111111-1111-4111-8111-111111111111", "created", [])
+
+            log = SQLiteEventLog(db_path)
+            try:
+                log.append(first)
+            finally:
+                log.close()
+
+            reopened = SQLiteEventLog(db_path)
+            try:
+                duplicate = _event(
+                    2,
+                    "11111111-1111-4111-8111-111111111111",
+                    "updated",
+                    [first.event_id],
+                )
+                with self.assertRaisesRegex(ValueError, "duplicate event_id"):
+                    reopened.append(duplicate)
+
+                non_contiguous = _event(
+                    3,
+                    "33333333-3333-4333-8333-333333333333",
+                    "updated",
+                    [first.event_id],
+                )
+                with self.assertRaisesRegex(ValueError, "contiguous"):
+                    reopened.append(non_contiguous)
+            finally:
+                reopened.close()

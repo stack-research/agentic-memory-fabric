@@ -3,9 +3,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, Protocol
 
 from .events import EventEnvelope
+
+SignatureVerifier = Callable[[EventEnvelope], str]
+
+
+class EventLog(Protocol):
+    def append(
+        self,
+        event: EventEnvelope,
+        *,
+        signature_verifier: SignatureVerifier | None = None,
+    ) -> None: ...
+
+    def all_events(self) -> tuple[EventEnvelope, ...]: ...
+
+    def __len__(self) -> int: ...
+
+    def signature_states(self) -> dict[str, str]: ...
+
+    def signature_state_for_event(self, event_id: str) -> str | None: ...
 
 
 @dataclass
@@ -18,7 +37,7 @@ class AppendOnlyEventLog:
         self,
         event: EventEnvelope,
         *,
-        signature_verifier: Callable[[EventEnvelope], str] | None = None,
+        signature_verifier: SignatureVerifier | None = None,
     ) -> None:
         expected_sequence = len(self._events) + 1
         if event.sequence != expected_sequence:

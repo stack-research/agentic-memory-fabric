@@ -8,7 +8,7 @@ from typing import Any, Iterable, Mapping
 from uuid import NAMESPACE_URL, uuid5
 
 from .events import Actor, EventEnvelope
-from .log import AppendOnlyEventLog
+from .log import EventLog
 
 
 def _canonical_json(value: Any) -> str:
@@ -109,7 +109,7 @@ def import_records(
 
 
 def append_imported_records(
-    log: AppendOnlyEventLog,
+    log: EventLog,
     records: Iterable[Mapping[str, Any]],
     *,
     actor: Mapping[str, Any] | Actor,

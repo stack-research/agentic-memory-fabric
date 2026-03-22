@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Mapping
 
 from .crypto import verify_event_signature
@@ -11,16 +12,17 @@ from .events import EventEnvelope
 from .explain import explain
 from .export import export_provenance_log, export_sbom_snapshot
 from .importer import append_imported_records
-from .log import AppendOnlyEventLog
+from .log import AppendOnlyEventLog, EventLog
 from .policy import PolicyContext
 from .replay import MemoryState, replay_events
 from .retrieval import get as retrieval_get
 from .retrieval import query as retrieval_query
+from .sqlite_store import SQLiteEventLog
 
 
 @dataclass
 class MemoryRuntime:
-    log: AppendOnlyEventLog = field(default_factory=AppendOnlyEventLog)
+    log: EventLog = field(default_factory=AppendOnlyEventLog)
     keyring: dict[str, bytes | str] = field(default_factory=dict)
 
     def _key_resolver(self, key_id: str) -> bytes | str | None:
@@ -129,3 +131,16 @@ class MemoryRuntime:
             sequence_range=sequence_range,
             memory_id=memory_id,
         )
+
+
+def open_runtime(
+    *,
+    db_path: str | Path | None = None,
+    keyring: Mapping[str, bytes | str] | None = None,
+) -> MemoryRuntime:
+    log: EventLog
+    if db_path is None:
+        log = AppendOnlyEventLog()
+    else:
+        log = SQLiteEventLog(db_path=db_path)
+    return MemoryRuntime(log=log, keyring=dict(keyring or {}))

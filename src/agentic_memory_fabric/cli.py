@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 from typing import Any, TextIO
 
-from .runtime import MemoryRuntime
+from .runtime import MemoryRuntime, open_runtime
 
 
 def _load_state(path: Path) -> MemoryRuntime:
@@ -34,6 +34,7 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
     out = stdout or sys.stdout
     parser = argparse.ArgumentParser(prog="amf")
     parser.add_argument("--state-file", default=".amf-state.json")
+    parser.add_argument("--db", default=None)
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_ingest = sub.add_parser("ingest-event")
@@ -62,12 +63,19 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
     p_prov.add_argument("--range-end", type=int, default=None)
 
     args = parser.parse_args(argv)
-    state_path = Path(args.state_file)
-    runtime = _load_state(state_path)
+    runtime: MemoryRuntime
+    state_path: Path | None
+    if args.db:
+        runtime = open_runtime(db_path=args.db)
+        state_path = None
+    else:
+        state_path = Path(args.state_file)
+        runtime = _load_state(state_path)
 
     if args.command == "ingest-event":
         event = runtime.ingest_event(_load_json_arg(args.event_json))
-        _save_state(state_path, runtime)
+        if state_path is not None:
+            _save_state(state_path, runtime)
         out.write(json.dumps({"event": event.to_dict()}, sort_keys=True) + "\n")
         return 0
 
@@ -78,7 +86,8 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
             default_timestamp=args.default_timestamp,
             start_sequence=args.start_sequence,
         )
-        _save_state(state_path, runtime)
+        if state_path is not None:
+            _save_state(state_path, runtime)
         out.write(
             json.dumps(
                 {"count": len(events), "events": [event.to_dict() for event in events]},

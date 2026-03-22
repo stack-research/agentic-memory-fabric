@@ -22,18 +22,20 @@ from .decay import DecayPolicy, FreshnessDecision, compute_age_ticks, evaluate_f
 from .explain import explain
 from .export import export_provenance_log, export_sbom_snapshot
 from .importer import append_imported_records, import_records
-from .log import AppendOnlyEventLog
+from .log import AppendOnlyEventLog, EventLog
 from .policy import PolicyContext, PolicyDecision, evaluate_retrieval_policy
 from .replay import MemoryState, replay_events
 from .retrieval import RetrievalRecord, get, query
-from .runtime import MemoryRuntime
+from .runtime import MemoryRuntime, open_runtime
 from .service import ServiceApp, run_http_server
+from .sqlite_store import SQLiteEventLog
 
 __all__ = [
     "Actor",
     "AppendOnlyEventLog",
     "Attestation",
     "DecayPolicy",
+    "EventLog",
     "EventEnvelope",
     "EventSignature",
     "EventTimestamp",
@@ -55,6 +57,7 @@ __all__ = [
     "export_sbom_snapshot",
     "get",
     "MemoryRuntime",
+    "SQLiteEventLog",
     "ServiceApp",
     "append_imported_records",
     "import_records",
@@ -62,6 +65,7 @@ __all__ = [
     "replay_events",
     "run_cli",
     "run_http_server",
+    "open_runtime",
     "sign_event",
     "validate_event_envelope",
     "verify_event_signature",

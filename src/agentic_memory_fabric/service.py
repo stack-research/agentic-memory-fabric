@@ -8,7 +8,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse
 
-from .runtime import MemoryRuntime
+from .runtime import MemoryRuntime, open_runtime
 
 
 def _json_response(status: int, payload: dict) -> tuple[int, dict]:
@@ -113,7 +113,11 @@ def run_http_server(
     host: str = "127.0.0.1",
     port: int = 8000,
     runtime: MemoryRuntime | None = None,
+    db_path: str | None = None,
 ) -> ThreadingHTTPServer:
-    app = ServiceApp(runtime=runtime or MemoryRuntime())
+    if runtime is not None and db_path is not None:
+        raise ValueError("provide either runtime or db_path, not both")
+    app_runtime = runtime or open_runtime(db_path=db_path)
+    app = ServiceApp(runtime=app_runtime)
     server = ThreadingHTTPServer((host, port), create_http_handler(app))
     return server

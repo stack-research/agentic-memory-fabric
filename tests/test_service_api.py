@@ -1,5 +1,6 @@
 import pathlib
 import sys
+import tempfile
 import unittest
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -7,7 +8,8 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from agentic_memory_fabric.service import ServiceApp
+from agentic_memory_fabric.runtime import open_runtime
+from agentic_memory_fabric.service import ServiceApp, run_http_server
 
 
 class ServiceApiTests(unittest.TestCase):
@@ -87,3 +89,31 @@ class ServiceApiTests(unittest.TestCase):
         status_prov, payload_prov = app.handle_request("POST", "/export/provenance", b"{}")
         self.assertEqual(status_prov, 200)
         self.assertEqual(payload_prov["count"], 1)
+
+    def test_service_runtime_restarts_with_persistent_db(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = pathlib.Path(tmpdir) / "events.db"
+            app_one = ServiceApp(runtime=open_runtime(db_path=db_path))
+            app_one.handle_request(
+                "POST",
+                "/ingest/import",
+                (
+                    b'{"records":[{"memory_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",'
+                    b'"payload":{"v":"x"},"source_id":"seed-1"}],'
+                    b'"actor":{"id":"migration-bot","kind":"service"},'
+                    b'"default_timestamp":"2026-03-22T00:00:00Z"}'
+                ),
+            )
+
+            app_two = ServiceApp(runtime=open_runtime(db_path=db_path))
+            status, payload = app_two.handle_request(
+                "POST",
+                "/query",
+                b'{"policy_context":{"capabilities":["override_retrieval_denials"]}}',
+            )
+            self.assertEqual(status, 200)
+            self.assertEqual(payload["count"], 1)
+
+    def test_run_http_server_rejects_runtime_and_db_path_together(self) -> None:
+        with self.assertRaisesRegex(ValueError, "either runtime or db_path"):
+            run_http_server(runtime=open_runtime(), db_path="events.db")

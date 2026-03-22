@@ -79,3 +79,48 @@ class CliTests(unittest.TestCase):
             out_prov_b = io.StringIO()
             run_cli(["--state-file", state_file, "export-provenance"], stdout=out_prov_b)
             self.assertEqual(out_prov_a.getvalue(), out_prov_b.getvalue())
+
+    def test_cli_db_persists_across_invocations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_file = str(pathlib.Path(tmpdir) / "events.db")
+
+            out_import = io.StringIO()
+            rc = run_cli(
+                [
+                    "--db",
+                    db_file,
+                    "import-records",
+                    "--records-json",
+                    (
+                        '[{"memory_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",'
+                        '"payload":{"v":"x"},"source_id":"seed-1"}]'
+                    ),
+                    "--actor-json",
+                    '{"id":"migration-bot","kind":"service"}',
+                    "--default-timestamp",
+                    "2026-03-22T00:00:00Z",
+                ],
+                stdout=out_import,
+            )
+            self.assertEqual(rc, 0)
+            imported = json.loads(out_import.getvalue())
+            self.assertEqual(imported["count"], 1)
+
+            out_query = io.StringIO()
+            run_cli(
+                [
+                    "--db",
+                    db_file,
+                    "query",
+                    "--policy-json",
+                    '{"capabilities":["override_retrieval_denials"]}',
+                ],
+                stdout=out_query,
+            )
+            query_payload = json.loads(out_query.getvalue())
+            self.assertEqual(query_payload["count"], 1)
+
+            out_prov = io.StringIO()
+            run_cli(["--db", db_file, "export-provenance"], stdout=out_prov)
+            provenance = json.loads(out_prov.getvalue())
+            self.assertEqual(provenance["count"], 1)

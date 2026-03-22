@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Literal
 
 from .policy import PolicyContext, evaluate_retrieval_policy
 from .replay import MemoryState
@@ -22,6 +23,22 @@ class RetrievalRecord:
     override_used: bool
 
 
+@dataclass(frozen=True)
+class QueryAuditSummary:
+    considered: int
+    allowed: int
+    trust_state_filtered: int
+    override_used_count: int
+    denied_by_reason: dict[str, int]
+
+
+@dataclass(frozen=True)
+class GetOutcome:
+    outcome: Literal["allowed", "denied", "not_found"]
+    record: RetrievalRecord | None = None
+    denial_reason: str | None = None
+
+
 def _to_retrieval_record(state: MemoryState, *, why_sound: str, denial_reason: str | None, override_used: bool) -> RetrievalRecord:
     return RetrievalRecord(
         memory_id=state.memory_id,
@@ -37,42 +54,69 @@ def _to_retrieval_record(state: MemoryState, *, why_sound: str, denial_reason: s
     )
 
 
-def get(
+def get_outcome(
     memory_id: str,
     state_map: dict[str, MemoryState],
     policy_context: PolicyContext,
-) -> RetrievalRecord | None:
+) -> GetOutcome:
     state = state_map.get(memory_id)
     if state is None:
-        return None
+        return GetOutcome(outcome="not_found")
 
     decision = evaluate_retrieval_policy(state, policy_context)
     if not decision.allowed:
-        return None
-    return _to_retrieval_record(
+        return GetOutcome(
+            outcome="denied",
+            denial_reason=decision.denial_reason,
+        )
+    record = _to_retrieval_record(
         state,
         why_sound=decision.why_sound,
         denial_reason=decision.denial_reason,
         override_used=decision.override_used,
     )
+    return GetOutcome(
+        outcome="allowed",
+        record=record,
+        denial_reason=decision.denial_reason,
+    )
 
 
-def query(
+def get(
+    memory_id: str,
+    state_map: dict[str, MemoryState],
+    policy_context: PolicyContext,
+) -> RetrievalRecord | None:
+    outcome = get_outcome(memory_id, state_map, policy_context)
+    return outcome.record if outcome.outcome == "allowed" else None
+
+
+def query_with_summary(
     state_map: dict[str, MemoryState],
     policy_context: PolicyContext,
     trust_states: set[str] | None = None,
     limit: int | None = None,
-) -> list[RetrievalRecord]:
+) -> tuple[list[RetrievalRecord], QueryAuditSummary]:
     if limit is not None and limit < 1:
         raise ValueError("limit must be >= 1 when provided")
 
     records: list[RetrievalRecord] = []
+    considered = 0
+    trust_state_filtered = 0
+    override_used_count = 0
+    denied_by_reason: dict[str, int] = {}
     for state in sorted(state_map.values(), key=lambda item: item.last_sequence, reverse=True):
+        considered += 1
         if trust_states is not None and state.trust_state not in trust_states:
+            trust_state_filtered += 1
             continue
         decision = evaluate_retrieval_policy(state, policy_context)
         if not decision.allowed:
+            reason = decision.denial_reason or "policy_denied"
+            denied_by_reason[reason] = denied_by_reason.get(reason, 0) + 1
             continue
+        if decision.override_used:
+            override_used_count += 1
         records.append(
             _to_retrieval_record(
                 state,
@@ -84,4 +128,28 @@ def query(
         if limit is not None and len(records) >= limit:
             break
 
+    return (
+        records,
+        QueryAuditSummary(
+            considered=considered,
+            allowed=len(records),
+            trust_state_filtered=trust_state_filtered,
+            override_used_count=override_used_count,
+            denied_by_reason=denied_by_reason,
+        ),
+    )
+
+
+def query(
+    state_map: dict[str, MemoryState],
+    policy_context: PolicyContext,
+    trust_states: set[str] | None = None,
+    limit: int | None = None,
+) -> list[RetrievalRecord]:
+    records, _summary = query_with_summary(
+        state_map,
+        policy_context,
+        trust_states=trust_states,
+        limit=limit,
+    )
     return records

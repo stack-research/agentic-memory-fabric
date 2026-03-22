@@ -63,3 +63,28 @@ python -m agentic_memory_fabric.cli --state-file .amf-state.json query \
   --capabilities-json '["override_retrieval_denials"]' \
   --keyring-json '{"dev-key":{"key":"super-secret","status":"active"}}'
 ```
+
+## Audit Hooks
+
+Runtime operations can emit structured audit records through an optional sink callback.
+Current event types include `memory.query`, `memory.get`, and `memory.explain`.
+
+```python
+from agentic_memory_fabric.runtime import open_runtime
+
+audit_events = []
+runtime = open_runtime(audit_sink=audit_events.append)
+
+# run query/get/explain...
+# audit_events now contains deterministic dictionaries, for example:
+# {"type":"memory.query","tenant_id":"tenant-alpha","allowed":1,"denied_by_reason":{}}
+```
+
+CLI can write the same records as JSONL:
+
+```bash
+python -m agentic_memory_fabric.cli --state-file .amf-state.json \
+  --tenant-id tenant-alpha \
+  --audit-jsonl .amf-audit.jsonl \
+  query
+```

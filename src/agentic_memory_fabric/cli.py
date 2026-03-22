@@ -6,10 +6,10 @@ import argparse
 import json
 import sys
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, Mapping, TextIO
 
 from .crypto import KEY_STATUS_ACTIVE, KeyMaterial
-from .runtime import MemoryRuntime, open_runtime
+from .runtime import AuditSink, MemoryRuntime, open_runtime
 
 
 def _decode_keyring(raw: str) -> dict[str, bytes | str | KeyMaterial]:
@@ -32,13 +32,20 @@ def _decode_keyring(raw: str) -> dict[str, bytes | str | KeyMaterial]:
     return keyring
 
 
-def _load_state(path: Path, *, keyring: dict[str, bytes | str | KeyMaterial]) -> MemoryRuntime:
+def _load_state(
+    path: Path,
+    *,
+    keyring: dict[str, bytes | str | KeyMaterial],
+    audit_sink: AuditSink | None = None,
+) -> MemoryRuntime:
     runtime = MemoryRuntime(keyring=dict(keyring))
     if not path.exists():
+        runtime.audit_sink = audit_sink
         return runtime
     raw = json.loads(path.read_text(encoding="utf-8"))
     for event in raw.get("events", []):
         runtime.ingest_event(event)
+    runtime.audit_sink = audit_sink
     return runtime
 
 
@@ -51,6 +58,17 @@ def _load_json_arg(raw: str) -> Any:
     return json.loads(raw)
 
 
+def _build_audit_sink(path: Path | None) -> AuditSink | None:
+    if path is None:
+        return None
+
+    def _sink(event: Mapping[str, Any]) -> None:
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(dict(event), sort_keys=True) + "\n")
+
+    return _sink
+
+
 def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> int:
     out = stdout or sys.stdout
     parser = argparse.ArgumentParser(prog="amf")
@@ -61,6 +79,7 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
     parser.add_argument("--capabilities-json", default="[]")
     parser.add_argument("--allow-overrides", action="store_true")
     parser.add_argument("--keyring-json", default="{}")
+    parser.add_argument("--audit-jsonl", default=None)
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_ingest = sub.add_parser("ingest-event")
@@ -92,12 +111,13 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
     runtime: MemoryRuntime
     state_path: Path | None
     keyring = _decode_keyring(args.keyring_json)
+    audit_sink = _build_audit_sink(Path(args.audit_jsonl) if args.audit_jsonl else None)
     if args.db:
-        runtime = open_runtime(db_path=args.db, keyring=keyring)
+        runtime = open_runtime(db_path=args.db, keyring=keyring, audit_sink=audit_sink)
         state_path = None
     else:
         state_path = Path(args.state_file)
-        runtime = _load_state(state_path, keyring=keyring)
+        runtime = _load_state(state_path, keyring=keyring, audit_sink=audit_sink)
     capabilities = _load_json_arg(args.capabilities_json)
     if not isinstance(capabilities, list):
         raise ValueError("--capabilities-json must decode to a JSON array")

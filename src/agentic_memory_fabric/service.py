@@ -6,7 +6,7 @@ import json
 from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
 from .crypto import KeyMaterial
@@ -21,6 +21,12 @@ def _json_response(status: int, payload: dict) -> tuple[int, dict]:
 class ServiceApp:
     runtime: MemoryRuntime = field(default_factory=MemoryRuntime)
     auth_tokens: dict[str, dict[str, Any]] = field(default_factory=dict)
+    audit_sink: Callable[[Mapping[str, Any]], None] | None = None
+
+    def _emit_audit(self, event: dict[str, Any]) -> None:
+        if self.audit_sink is None:
+            return
+        self.audit_sink(dict(event))
 
     def _parse_json_body(self, body: bytes | None) -> dict:
         if not body:
@@ -89,6 +95,18 @@ class ServiceApp:
                 raise ValueError("tenant mismatch between auth context and request")
             tenant_id = trusted_tenant
         policy_context = self._merge_policy_context(payload=payload, tenant_id=tenant_id)
+        base_audit_event = {
+            "type": "http.request",
+            "http_method": method,
+            "http_route": route,
+            "tenant_id": tenant_id,
+        }
+
+        def respond(status: int, response_payload: dict) -> tuple[int, dict]:
+            event = dict(base_audit_event)
+            event["http_status"] = int(status)
+            self._emit_audit(event)
+            return _json_response(status, response_payload)
 
         if method == "POST" and route == "/ingest/event":
             event_data = payload.get("event", payload)
@@ -97,7 +115,7 @@ class ServiceApp:
                 expected_tenant_id=tenant_id,
                 trusted_context=trusted_context,
             )
-            return _json_response(HTTPStatus.OK, {"event": event.to_dict()})
+            return respond(HTTPStatus.OK, {"event": event.to_dict()})
 
         if method == "POST" and route == "/ingest/import":
             events = self.runtime.import_records(
@@ -110,7 +128,7 @@ class ServiceApp:
                 expected_tenant_id=tenant_id,
                 trusted_context=trusted_context,
             )
-            return _json_response(
+            return respond(
                 HTTPStatus.OK,
                 {"count": len(events), "events": [event.to_dict() for event in events]},
             )
@@ -122,7 +140,7 @@ class ServiceApp:
                 trust_states=set(payload["trust_states"]) if payload.get("trust_states") else None,
                 limit=payload.get("limit"),
             )
-            return _json_response(HTTPStatus.OK, {"count": len(records), "records": records})
+            return respond(HTTPStatus.OK, {"count": len(records), "records": records})
 
         if method == "GET" and route.startswith("/memory/") and route.endswith("/explain"):
             parts = route.split("/")
@@ -134,14 +152,14 @@ class ServiceApp:
                 policy_context=policy_context,
                 trusted_context=trusted_context,
             )
-            return _json_response(HTTPStatus.OK, {"memory_id": memory_id, "trace": trace})
+            return respond(HTTPStatus.OK, {"memory_id": memory_id, "trace": trace})
 
         if method == "POST" and route == "/export/snapshot":
             snapshot = self.runtime.export_snapshot(
                 policy_context=policy_context,
                 trusted_context=trusted_context,
             )
-            return _json_response(HTTPStatus.OK, snapshot)
+            return respond(HTTPStatus.OK, snapshot)
 
         if method == "POST" and route == "/export/provenance":
             sequence_range = payload.get("sequence_range")
@@ -153,9 +171,9 @@ class ServiceApp:
                 sequence_range=sequence_range,
                 memory_id=payload.get("memory_id"),
             )
-            return _json_response(HTTPStatus.OK, provenance)
+            return respond(HTTPStatus.OK, provenance)
 
-        return _json_response(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+        return respond(HTTPStatus.NOT_FOUND, {"error": "Not found"})
 
 
 def create_http_handler(app: ServiceApp):
@@ -199,10 +217,11 @@ def run_http_server(
     runtime: MemoryRuntime | None = None,
     db_path: str | None = None,
     keyring: Mapping[str, bytes | str | KeyMaterial] | None = None,
+    audit_sink: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> ThreadingHTTPServer:
     if runtime is not None and db_path is not None:
         raise ValueError("provide either runtime or db_path, not both")
-    app_runtime = runtime or open_runtime(db_path=db_path, keyring=keyring)
-    app = ServiceApp(runtime=app_runtime)
+    app_runtime = runtime or open_runtime(db_path=db_path, keyring=keyring, audit_sink=audit_sink)
+    app = ServiceApp(runtime=app_runtime, audit_sink=audit_sink)
     server = ThreadingHTTPServer((host, port), create_http_handler(app))
     return server

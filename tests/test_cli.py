@@ -296,3 +296,44 @@ class CliTests(unittest.TestCase):
             second_payload = json.loads(out_second.getvalue())
             self.assertEqual(second_payload["count"], 1)
             self.assertEqual(second_payload["records"][0]["version"], 2)
+
+    def test_cli_writes_audit_jsonl_records(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = str(pathlib.Path(tmpdir) / "state.json")
+            audit_file = pathlib.Path(tmpdir) / "audit.jsonl"
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--audit-jsonl",
+                    str(audit_file),
+                    "import-records",
+                    "--records-json",
+                    (
+                        '[{"memory_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",'
+                        '"payload":{"v":"x"},"source_id":"seed-1"}]'
+                    ),
+                    "--actor-json",
+                    '{"id":"migration-bot","kind":"service"}',
+                    "--default-timestamp",
+                    "2026-03-22T00:00:00Z",
+                ],
+                stdout=io.StringIO(),
+            )
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--audit-jsonl",
+                    str(audit_file),
+                    "query",
+                ],
+                stdout=io.StringIO(),
+            )
+            lines = [line for line in audit_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+            parsed = [json.loads(line) for line in lines]
+            self.assertTrue(any(event.get("type") == "memory.query" for event in parsed))

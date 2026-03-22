@@ -10,7 +10,7 @@ if str(SRC_ROOT) not in sys.path:
 from agentic_memory_fabric.policy import OVERRIDE_CAPABILITY, PolicyContext
 from agentic_memory_fabric.decay import DecayPolicy
 from agentic_memory_fabric.replay import LIFECYCLE_ACTIVE, LIFECYCLE_DELETED, MemoryState
-from agentic_memory_fabric.retrieval import get, query
+from agentic_memory_fabric.retrieval import get, get_outcome, query, query_with_summary
 
 
 class RetrievalPolicyTests(unittest.TestCase):
@@ -210,3 +210,28 @@ class RetrievalPolicyTests(unittest.TestCase):
         )
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0].denial_reason, "decay_expired_default_deny")
+
+    def test_query_with_summary_matches_query_and_denial_histogram(self) -> None:
+        state_map = self._state_map()
+        ctx = PolicyContext(tenant_id="tenant-alpha")
+        records = query(state_map, ctx)
+        records_with_summary, summary = query_with_summary(state_map, ctx)
+        self.assertEqual([record.memory_id for record in records_with_summary], [record.memory_id for record in records])
+        self.assertEqual(summary.allowed, len(records))
+        self.assertEqual(summary.considered, len(state_map))
+        self.assertEqual(summary.denied_by_reason["quarantined_memory_default_deny"], 1)
+        self.assertEqual(summary.denied_by_reason["expired_memory_default_deny"], 1)
+        self.assertEqual(summary.denied_by_reason["deleted_memory_default_deny"], 1)
+        self.assertEqual(summary.denied_by_reason["signature_key_missing_default_deny"], 1)
+        self.assertEqual(summary.denied_by_reason["signature_key_revoked_default_deny"], 1)
+
+    def test_get_outcome_distinguishes_not_found_denied_and_allowed(self) -> None:
+        state_map = self._state_map()
+        allowed = get_outcome("mem-trusted", state_map, PolicyContext(tenant_id="tenant-alpha"))
+        denied = get_outcome("mem-quarantined", state_map, PolicyContext(tenant_id="tenant-alpha"))
+        missing = get_outcome("mem-missing", state_map, PolicyContext(tenant_id="tenant-alpha"))
+        self.assertEqual(allowed.outcome, "allowed")
+        self.assertIsNotNone(allowed.record)
+        self.assertEqual(denied.outcome, "denied")
+        self.assertEqual(denied.denial_reason, "quarantined_memory_default_deny")
+        self.assertEqual(missing.outcome, "not_found")

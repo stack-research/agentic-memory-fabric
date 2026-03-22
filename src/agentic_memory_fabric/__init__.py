@@ -28,15 +28,17 @@ from .importer import append_imported_records, import_records
 from .log import AppendOnlyEventLog, EventLog
 from .policy import PolicyContext, PolicyDecision, evaluate_retrieval_policy
 from .replay import MemoryState, replay_events
-from .retrieval import RetrievalRecord, get, query
-from .runtime import MemoryRuntime, open_runtime
+from .retrieval import GetOutcome, QueryAuditSummary, RetrievalRecord, get, get_outcome, query, query_with_summary
+from .runtime import AuditSink, MemoryRuntime, open_runtime
 from .service import ServiceApp, run_http_server
 from .sqlite_store import SQLiteEventLog
 
 __all__ = [
     "Actor",
     "AppendOnlyEventLog",
+    "AuditSink",
     "Attestation",
+    "GetOutcome",
     "DecayPolicy",
     "EventLog",
     "EventEnvelope",
@@ -50,6 +52,7 @@ __all__ = [
     "MemoryState",
     "PolicyContext",
     "PolicyDecision",
+    "QueryAuditSummary",
     "RetrievalRecord",
     "SUPPORTED_SIGNATURE_ALGS",
     "SignatureState",
@@ -62,12 +65,14 @@ __all__ = [
     "export_provenance_log",
     "export_sbom_snapshot",
     "get",
+    "get_outcome",
     "MemoryRuntime",
     "SQLiteEventLog",
     "ServiceApp",
     "append_imported_records",
     "import_records",
     "query",
+    "query_with_summary",
     "replay_events",
     "run_cli",
     "run_http_server",

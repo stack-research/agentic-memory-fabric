@@ -346,6 +346,39 @@ class ServiceApiTests(unittest.TestCase):
         self.assertEqual(payload_second["count"], 1)
         self.assertEqual(payload_second["records"][0]["version"], 2)
 
+    def test_query_emits_runtime_and_http_audit_records(self) -> None:
+        runtime_events: list[dict] = []
+        http_events: list[dict] = []
+        runtime = open_runtime(audit_sink=runtime_events.append)
+        app = ServiceApp(runtime=runtime, audit_sink=http_events.append)
+        app.handle_request(
+            "POST",
+            "/ingest/import",
+            (
+                b'{"records":[{"memory_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",'
+                b'"payload":{"v":"x"},"source_id":"seed-1"}],'
+                b'"actor":{"id":"migration-bot","kind":"service"},'
+                b'"default_timestamp":"2026-03-22T00:00:00Z"}'
+            ),
+            headers=TENANT_HEADER,
+        )
+        status, payload = app.handle_request("POST", "/query", b"{}", headers=TENANT_HEADER)
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["count"], 0)
+
+        query_events = [event for event in runtime_events if event.get("type") == "memory.query"]
+        self.assertEqual(len(query_events), 1)
+        self.assertEqual(query_events[0]["allowed"], 0)
+        self.assertEqual(query_events[0]["denied_by_reason"]["signature_missing_default_deny"], 1)
+
+        http_query_events = [
+            event
+            for event in http_events
+            if event.get("type") == "http.request" and event.get("http_route") == "/query"
+        ]
+        self.assertEqual(len(http_query_events), 1)
+        self.assertEqual(http_query_events[0]["http_status"], 200)
+
 
 def json_bytes(value: dict) -> bytes:
     import json

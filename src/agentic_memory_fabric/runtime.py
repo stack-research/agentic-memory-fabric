@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Callable, Mapping
 
 from .crypto import KeyMaterial, verify_event_signature
 from .decay import DecayPolicy
@@ -15,15 +15,17 @@ from .importer import append_imported_records
 from .log import AppendOnlyEventLog, EventLog
 from .policy import PolicyContext
 from .replay import MemoryState, replay_events
-from .retrieval import get as retrieval_get
-from .retrieval import query as retrieval_query
+from .retrieval import get_outcome, query_with_summary
 from .sqlite_store import SQLiteEventLog
+
+AuditSink = Callable[[Mapping[str, Any]], None]
 
 
 @dataclass
 class MemoryRuntime:
     log: EventLog = field(default_factory=AppendOnlyEventLog)
     keyring: dict[str, bytes | str | KeyMaterial] = field(default_factory=dict)
+    audit_sink: AuditSink | None = None
     _state_cache: dict[str, MemoryState] | None = field(default=None, init=False, repr=False)
     _events_cache: tuple[EventEnvelope, ...] | None = field(default=None, init=False, repr=False)
 
@@ -96,6 +98,11 @@ class MemoryRuntime:
             self._events_cache = self.log.all_events()
         return self._events_cache
 
+    def _emit_audit(self, event: dict[str, Any]) -> None:
+        if self.audit_sink is None:
+            return
+        self.audit_sink(dict(event))
+
     def state_map(self) -> dict[str, MemoryState]:
         if self._state_cache is None:
             events, signature_states = self._load_events_and_signature_states()
@@ -161,13 +168,27 @@ class MemoryRuntime:
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
         ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
-        records = retrieval_query(
+        records, summary = query_with_summary(
             self.state_map(),
             ctx,
             trust_states=trust_states,
             limit=limit,
         )
-        return [record.__dict__ for record in records]
+        records_out = [record.__dict__ for record in records]
+        self._emit_audit(
+            {
+                "type": "memory.query",
+                "tenant_id": ctx.tenant_id,
+                "limit": limit,
+                "trust_states": sorted(trust_states) if trust_states is not None else None,
+                "considered": summary.considered,
+                "allowed": summary.allowed,
+                "trust_state_filtered": summary.trust_state_filtered,
+                "override_used_count": summary.override_used_count,
+                "denied_by_reason": dict(summary.denied_by_reason),
+            }
+        )
+        return records_out
 
     def get(
         self,
@@ -177,8 +198,17 @@ class MemoryRuntime:
         trusted_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any] | None:
         ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
-        record = retrieval_get(memory_id, self.state_map(), ctx)
-        return None if record is None else record.__dict__
+        outcome = get_outcome(memory_id, self.state_map(), ctx)
+        self._emit_audit(
+            {
+                "type": "memory.get",
+                "tenant_id": ctx.tenant_id,
+                "memory_id": memory_id,
+                "outcome": outcome.outcome,
+                "denial_reason": outcome.denial_reason,
+            }
+        )
+        return None if outcome.record is None else outcome.record.__dict__
 
     def explain(
         self,
@@ -189,10 +219,31 @@ class MemoryRuntime:
     ) -> list[dict[str, Any]]:
         ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
         state_map = self.state_map()
-        record = retrieval_get(memory_id, state_map, ctx)
-        if record is None:
+        outcome = get_outcome(memory_id, state_map, ctx)
+        if outcome.record is None:
+            self._emit_audit(
+                {
+                    "type": "memory.explain",
+                    "tenant_id": ctx.tenant_id,
+                    "memory_id": memory_id,
+                    "outcome": outcome.outcome,
+                    "denial_reason": outcome.denial_reason,
+                    "trace_count": 0,
+                }
+            )
             return []
-        return explain(memory_id, self._load_all_events_cached(), tenant_id=ctx.tenant_id)
+        trace = explain(memory_id, self._load_all_events_cached(), tenant_id=ctx.tenant_id)
+        self._emit_audit(
+            {
+                "type": "memory.explain",
+                "tenant_id": ctx.tenant_id,
+                "memory_id": memory_id,
+                "outcome": "allowed",
+                "denial_reason": outcome.denial_reason,
+                "trace_count": len(trace),
+            }
+        )
+        return trace
 
     def export_snapshot(
         self,
@@ -237,10 +288,11 @@ def open_runtime(
     *,
     db_path: str | Path | None = None,
     keyring: Mapping[str, bytes | str | KeyMaterial] | None = None,
+    audit_sink: AuditSink | None = None,
 ) -> MemoryRuntime:
     log: EventLog
     if db_path is None:
         log = AppendOnlyEventLog()
     else:
         log = SQLiteEventLog(db_path=db_path)
-    return MemoryRuntime(log=log, keyring=dict(keyring or {}))
+    return MemoryRuntime(log=log, keyring=dict(keyring or {}), audit_sink=audit_sink)

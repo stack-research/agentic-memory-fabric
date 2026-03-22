@@ -29,17 +29,28 @@ AUTH_TOKENS = {
 
 
 class ServiceApiTests(unittest.TestCase):
-    def _signed_created_event(self, *, key_id: str = "dev-key", key: bytes = b"super-secret") -> dict:
+    def _signed_event(
+        self,
+        *,
+        sequence: int = 1,
+        event_id: str = "99999999-9999-4999-8999-999999999999",
+        event_type: str = "created",
+        previous_events: list[str] | None = None,
+        key_id: str = "dev-key",
+        key: bytes = b"super-secret",
+    ) -> dict:
+        if previous_events is None:
+            previous_events = []
         event = EventEnvelope.from_dict(
             {
-                "event_id": "99999999-9999-4999-8999-999999999999",
-                "sequence": 1,
-                "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 1},
+                "event_id": event_id,
+                "sequence": sequence,
+                "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": sequence},
                 "actor": {"id": "svc-memory", "kind": "service"},
                 "tenant_id": "tenant-alpha",
                 "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-                "event_type": "created",
-                "previous_events": [],
+                "event_type": event_type,
+                "previous_events": previous_events,
                 "payload_hash": "sha256:" + ("a" * 64),
             }
         )
@@ -252,7 +263,7 @@ class ServiceApiTests(unittest.TestCase):
         status_ingest, _payload_ingest = app.handle_request(
             "POST",
             "/ingest/event",
-            json_bytes({"event": self._signed_created_event()}),
+            json_bytes({"event": self._signed_event()}),
             headers=TENANT_HEADER,
         )
         self.assertEqual(status_ingest, 200)
@@ -274,7 +285,7 @@ class ServiceApiTests(unittest.TestCase):
         app.handle_request(
             "POST",
             "/ingest/event",
-            json_bytes({"event": self._signed_created_event()}),
+            json_bytes({"event": self._signed_event()}),
             headers=TENANT_HEADER,
         )
         status_default, payload_default = app.handle_request(
@@ -297,6 +308,43 @@ class ServiceApiTests(unittest.TestCase):
             payload_override["records"][0]["denial_reason"],
             "signature_key_revoked_default_deny",
         )
+
+    def test_query_after_second_write_returns_updated_version(self) -> None:
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        app = ServiceApp(runtime=runtime)
+        first_event = self._signed_event(
+            sequence=1,
+            event_id="11111111-1111-4111-8111-111111111111",
+            event_type="created",
+            previous_events=[],
+        )
+        second_event = self._signed_event(
+            sequence=2,
+            event_id="22222222-2222-4222-8222-222222222222",
+            event_type="updated",
+            previous_events=["11111111-1111-4111-8111-111111111111"],
+        )
+        app.handle_request("POST", "/ingest/event", json_bytes({"event": first_event}), headers=TENANT_HEADER)
+        status_first, payload_first = app.handle_request(
+            "POST",
+            "/query",
+            b"{}",
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_first, 200)
+        self.assertEqual(payload_first["count"], 1)
+        self.assertEqual(payload_first["records"][0]["version"], 1)
+
+        app.handle_request("POST", "/ingest/event", json_bytes({"event": second_event}), headers=TENANT_HEADER)
+        status_second, payload_second = app.handle_request(
+            "POST",
+            "/query",
+            b"{}",
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_second, 200)
+        self.assertEqual(payload_second["count"], 1)
+        self.assertEqual(payload_second["records"][0]["version"], 2)
 
 
 def json_bytes(value: dict) -> bytes:

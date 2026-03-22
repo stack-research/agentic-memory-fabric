@@ -186,6 +186,58 @@ class LogReplayTests(unittest.TestCase):
             finally:
                 reopened.close()
 
+    def test_sqlite_single_pass_read_returns_events_and_signature_states(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = pathlib.Path(tmpdir) / "events.db"
+            first = _event(1, "11111111-1111-4111-8111-111111111111", "created", [])
+            second = _event(
+                2,
+                "22222222-2222-4222-8222-222222222222",
+                "updated",
+                [first.event_id],
+            )
+            log = SQLiteEventLog(db_path)
+            try:
+                log.append(first, signature_verifier=lambda _: "verified")
+                log.append(second, signature_verifier=lambda _: "invalid")
+                events, states = log.all_events_with_signature_states()
+                self.assertEqual([event.event_id for event in events], [first.event_id, second.event_id])
+                self.assertEqual(
+                    states,
+                    {
+                        first.event_id: "verified",
+                        second.event_id: "invalid",
+                    },
+                )
+            finally:
+                log.close()
+
+    def test_sqlite_events_in_sequence_range_filters_rows(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = pathlib.Path(tmpdir) / "events.db"
+            first = _event(1, "11111111-1111-4111-8111-111111111111", "created", [])
+            second = _event(
+                2,
+                "22222222-2222-4222-8222-222222222222",
+                "updated",
+                [first.event_id],
+            )
+            third = _event(
+                3,
+                "33333333-3333-4333-8333-333333333333",
+                "expired",
+                [second.event_id],
+            )
+            log = SQLiteEventLog(db_path)
+            try:
+                log.append(first)
+                log.append(second)
+                log.append(third)
+                subset = log.events_in_sequence_range(start=2, end=3)
+                self.assertEqual([event.event_id for event in subset], [second.event_id, third.event_id])
+            finally:
+                log.close()
+
     def test_sqlite_log_enforces_invariants_after_reopen(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = pathlib.Path(tmpdir) / "events.db"

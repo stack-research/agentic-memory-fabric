@@ -24,6 +24,8 @@ from .sqlite_store import SQLiteEventLog
 class MemoryRuntime:
     log: EventLog = field(default_factory=AppendOnlyEventLog)
     keyring: dict[str, bytes | str | KeyMaterial] = field(default_factory=dict)
+    _state_cache: dict[str, MemoryState] | None = field(default=None, init=False, repr=False)
+    _events_cache: tuple[EventEnvelope, ...] | None = field(default=None, init=False, repr=False)
 
     def _key_resolver(self, key_id: str) -> bytes | str | KeyMaterial | None:
         return self.keyring.get(key_id)
@@ -76,11 +78,29 @@ class MemoryRuntime:
             raise ValueError("trusted_context.tenant_id must be non-empty when provided")
         return tenant_id_str
 
+    def _invalidate_read_model_cache(self) -> None:
+        self._state_cache = None
+        self._events_cache = None
+
+    def _load_events_and_signature_states(self) -> tuple[tuple[EventEnvelope, ...], dict[str, str]]:
+        if hasattr(self.log, "all_events_with_signature_states"):
+            events, signature_states = self.log.all_events_with_signature_states()
+            self._events_cache = events
+            return events, signature_states
+        if self._events_cache is None:
+            self._events_cache = self.log.all_events()
+        return self._events_cache, self.log.signature_states()
+
+    def _load_all_events_cached(self) -> tuple[EventEnvelope, ...]:
+        if self._events_cache is None:
+            self._events_cache = self.log.all_events()
+        return self._events_cache
+
     def state_map(self) -> dict[str, MemoryState]:
-        return replay_events(
-            self.log.all_events(),
-            signature_states=self.log.signature_states(),
-        )
+        if self._state_cache is None:
+            events, signature_states = self._load_events_and_signature_states()
+            self._state_cache = replay_events(events, signature_states=signature_states)
+        return dict(self._state_cache)
 
     def ingest_event(
         self,
@@ -94,6 +114,7 @@ class MemoryRuntime:
         if expected_tenant_id is not None and event.tenant_id != expected_tenant_id:
             raise ValueError("tenant mismatch between trusted context and event payload")
         self.log.append(event, signature_verifier=self._signature_verifier)
+        self._invalidate_read_model_cache()
         return event
 
     def import_records(
@@ -128,6 +149,7 @@ class MemoryRuntime:
             tenant_id=effective_tenant_id,
             signature_verifier=self._signature_verifier,
         )
+        self._invalidate_read_model_cache()
         return events
 
     def query(
@@ -170,7 +192,7 @@ class MemoryRuntime:
         record = retrieval_get(memory_id, state_map, ctx)
         if record is None:
             return []
-        return explain(memory_id, self.log.all_events(), tenant_id=ctx.tenant_id)
+        return explain(memory_id, self._load_all_events_cached(), tenant_id=ctx.tenant_id)
 
     def export_snapshot(
         self,
@@ -197,8 +219,14 @@ class MemoryRuntime:
                 "events": [],
                 "denial_reason": "tenant_scope_required_default_deny",
             }
+        events: tuple[EventEnvelope, ...]
+        if sequence_range is not None and hasattr(self.log, "events_in_sequence_range"):
+            start, end = sequence_range
+            events = self.log.events_in_sequence_range(start=start, end=end)
+        else:
+            events = self._load_all_events_cached()
         return export_provenance_log(
-            self.log.all_events(),
+            events,
             sequence_range=sequence_range,
             memory_id=memory_id,
             tenant_id=ctx.tenant_id,

@@ -16,17 +16,26 @@ from agentic_memory_fabric.events import EventEnvelope
 
 
 class CliTests(unittest.TestCase):
-    def _signed_event_json(self) -> str:
+    def _signed_event_json(
+        self,
+        *,
+        sequence: int = 1,
+        event_id: str = "99999999-9999-4999-8999-999999999999",
+        event_type: str = "created",
+        previous_events: list[str] | None = None,
+    ) -> str:
+        if previous_events is None:
+            previous_events = []
         event = EventEnvelope.from_dict(
             {
-                "event_id": "99999999-9999-4999-8999-999999999999",
-                "sequence": 1,
-                "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 1},
+                "event_id": event_id,
+                "sequence": sequence,
+                "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": sequence},
                 "actor": {"id": "svc-memory", "kind": "service"},
                 "tenant_id": "tenant-alpha",
                 "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-                "event_type": "created",
-                "previous_events": [],
+                "event_type": event_type,
+                "previous_events": previous_events,
                 "payload_hash": "sha256:" + ("a" * 64),
             }
         )
@@ -208,3 +217,82 @@ class CliTests(unittest.TestCase):
             payload = json.loads(out_query.getvalue())
             self.assertEqual(payload["count"], 1)
             self.assertEqual(payload["records"][0]["signature_state"], "verified")
+
+    def test_cli_db_query_updates_after_second_signed_ingest(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_file = str(pathlib.Path(tmpdir) / "events.db")
+            keyring_json = '{"dev-key":{"key":"super-secret","status":"active"}}'
+
+            run_cli(
+                [
+                    "--db",
+                    db_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "ingest-event",
+                    "--event-json",
+                    self._signed_event_json(
+                        sequence=1,
+                        event_id="11111111-1111-4111-8111-111111111111",
+                        event_type="created",
+                        previous_events=[],
+                    ),
+                ],
+                stdout=io.StringIO(),
+            )
+
+            out_first = io.StringIO()
+            run_cli(
+                [
+                    "--db",
+                    db_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "query",
+                ],
+                stdout=out_first,
+            )
+            first_payload = json.loads(out_first.getvalue())
+            self.assertEqual(first_payload["count"], 1)
+            self.assertEqual(first_payload["records"][0]["version"], 1)
+
+            run_cli(
+                [
+                    "--db",
+                    db_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "ingest-event",
+                    "--event-json",
+                    self._signed_event_json(
+                        sequence=2,
+                        event_id="22222222-2222-4222-8222-222222222222",
+                        event_type="updated",
+                        previous_events=["11111111-1111-4111-8111-111111111111"],
+                    ),
+                ],
+                stdout=io.StringIO(),
+            )
+
+            out_second = io.StringIO()
+            run_cli(
+                [
+                    "--db",
+                    db_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "query",
+                ],
+                stdout=out_second,
+            )
+            second_payload = json.loads(out_second.getvalue())
+            self.assertEqual(second_payload["count"], 1)
+            self.assertEqual(second_payload["records"][0]["version"], 2)

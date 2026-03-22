@@ -71,6 +71,31 @@ class SQLiteEventLog:
         ).fetchall()
         return tuple(EventEnvelope.from_dict(json.loads(row[0])) for row in rows)
 
+    def all_events_with_signature_states(self) -> tuple[tuple[EventEnvelope, ...], dict[str, str]]:
+        rows = self._conn.execute(
+            "SELECT event_json, event_id, signature_state FROM events ORDER BY sequence ASC"
+        ).fetchall()
+        events: list[EventEnvelope] = []
+        signature_states: dict[str, str] = {}
+        for event_json, event_id, signature_state in rows:
+            events.append(EventEnvelope.from_dict(json.loads(event_json)))
+            signature_states[str(event_id)] = str(signature_state)
+        return tuple(events), signature_states
+
+    def events_in_sequence_range(self, *, start: int, end: int) -> tuple[EventEnvelope, ...]:
+        if start < 1 or end < start:
+            raise ValueError("sequence range must be (start>=1, end>=start)")
+        rows = self._conn.execute(
+            """
+            SELECT event_json
+            FROM events
+            WHERE sequence BETWEEN ? AND ?
+            ORDER BY sequence ASC
+            """,
+            (start, end),
+        ).fetchall()
+        return tuple(EventEnvelope.from_dict(json.loads(row[0])) for row in rows)
+
     def __len__(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) FROM events").fetchone()
         return int(row[0]) if row is not None else 0

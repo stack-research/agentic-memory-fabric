@@ -1,6 +1,6 @@
 # Agentic Memory Fabric
 
-Agentic Memory Fabric is a memory control plane for AI systems. It treats durable memory as governed infrastructure, not prompt tricks: append-only events form lineage, policy gates retrieval, and exports distinguish current sound state from historical truth.
+Agentic Memory Fabric is a memory control plane for AI systems. It treats durable memory as governed infrastructure—enforced at the system layer rather than through ad hoc prompt engineering. Append-only events form lineage, policy gates retrieval, and exports distinguish current sound state from historical truth.
 
 In this causal memory fabric, events shape memory spacetime; time and integrity shape reality.
 

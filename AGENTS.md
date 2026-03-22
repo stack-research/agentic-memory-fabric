@@ -13,7 +13,7 @@ Project details, direction and resources to learn from:
 
 ## Product intent (compressed)
 
-Build infrastructure (not prompt tricks) for governed agent memory:
+Build infrastructure for governed agent memory—durable controls at the system layer, not ad hoc prompt engineering:
 
 - append-only events + lineage
 - decay/TTL policy modules

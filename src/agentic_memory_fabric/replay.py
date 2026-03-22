@@ -26,6 +26,9 @@ class MemoryState:
     last_tick: int
     payload_hash: str
     previous_events: tuple[str, ...]
+    has_attestation: bool = False
+    attestation_trust_level: str | None = None
+    attestation_issuer: str | None = None
 
 
 def replay_events(
@@ -71,6 +74,11 @@ def replay_events(
             last_tick=event.timestamp.tick if event.timestamp.tick is not None else event.sequence,
             payload_hash=event.payload_hash,
             previous_events=event.previous_events,
+            has_attestation=event.attestation is not None,
+            attestation_trust_level=(
+                event.attestation.trust_level if event.attestation is not None else None
+            ),
+            attestation_issuer=event.attestation.issuer if event.attestation is not None else None,
         )
 
     return materialized

@@ -20,6 +20,7 @@ def _event(
     event_type: str,
     previous_events: list[str],
     evidence_refs: list[dict] | None = None,
+    attestation: dict | None = None,
 ) -> EventEnvelope:
     payload_char = format(sequence % 16, "x")
     payload_hash = "sha256:" + (payload_char * 64)
@@ -36,6 +37,8 @@ def _event(
     }
     if evidence_refs is not None:
         event_data["evidence_refs"] = evidence_refs
+    if attestation is not None:
+        event_data["attestation"] = attestation
     return EventEnvelope.from_dict(event_data)
 
 
@@ -237,6 +240,24 @@ class LogReplayTests(unittest.TestCase):
                 self.assertEqual([event.event_id for event in subset], [second.event_id, third.event_id])
             finally:
                 log.close()
+
+    def test_replay_materializes_attestation_fields(self) -> None:
+        attested = _event(
+            1,
+            "99999999-9999-4999-8999-999999999999",
+            "attested",
+            [],
+            attestation={
+                "issuer": "issuer-alpha",
+                "issued_at": "2026-03-22T00:00:00Z",
+                "trust_level": "high",
+                "claims": {"ticket": "T-123"},
+            },
+        )
+        state = replay_events([attested])["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]
+        self.assertTrue(state.has_attestation)
+        self.assertEqual(state.attestation_issuer, "issuer-alpha")
+        self.assertEqual(state.attestation_trust_level, "high")
 
     def test_sqlite_log_enforces_invariants_after_reopen(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

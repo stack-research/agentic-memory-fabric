@@ -10,6 +10,8 @@ from .replay import LIFECYCLE_DELETED, MemoryState
 
 OVERRIDE_CAPABILITY = "override_retrieval_denials"
 OVERRIDE_ROLES = frozenset({"auditor", "debug"})
+ATTESTATION_TRUST_LEVELS = ("low", "medium", "high")
+_ATTESTATION_TRUST_RANK = {level: idx for idx, level in enumerate(ATTESTATION_TRUST_LEVELS)}
 NON_OVERRIDABLE_DENIALS = frozenset(
     {"tenant_scope_required_default_deny", "tenant_scope_mismatch_default_deny"}
 )
@@ -24,6 +26,9 @@ class PolicyContext:
     trusted_subject: bool = False
     current_tick: int | None = None
     decay_policy: DecayPolicy | None = None
+    require_attestation: bool = False
+    min_attestation_trust_level: str | None = None
+    allowed_attestation_issuers: frozenset[str] = field(default_factory=frozenset)
 
     def can_override(self) -> bool:
         if not self.trusted_subject:
@@ -45,6 +50,14 @@ class PolicyDecision:
 
 def evaluate_retrieval_policy(state: MemoryState, policy_context: PolicyContext) -> PolicyDecision:
     denial_reason: str | None = None
+    if (
+        policy_context.min_attestation_trust_level is not None
+        and policy_context.min_attestation_trust_level not in _ATTESTATION_TRUST_RANK
+    ):
+        raise ValueError(
+            "min_attestation_trust_level must be one of "
+            f"{list(ATTESTATION_TRUST_LEVELS)} when provided"
+        )
 
     if policy_context.tenant_id is None:
         denial_reason = "tenant_scope_required_default_deny"
@@ -66,6 +79,29 @@ def evaluate_retrieval_policy(state: MemoryState, policy_context: PolicyContext)
         )
         if not freshness.is_fresh:
             denial_reason = "decay_expired_default_deny"
+    if denial_reason is None and policy_context.require_attestation and not state.has_attestation:
+        denial_reason = "attestation_required_default_deny"
+    if (
+        denial_reason is None
+        and policy_context.min_attestation_trust_level is not None
+        and (
+            not state.has_attestation
+            or state.attestation_trust_level is None
+            or _ATTESTATION_TRUST_RANK[state.attestation_trust_level]
+            < _ATTESTATION_TRUST_RANK[policy_context.min_attestation_trust_level]
+        )
+    ):
+        denial_reason = "attestation_trust_level_default_deny"
+    if (
+        denial_reason is None
+        and policy_context.allowed_attestation_issuers
+        and (
+            not state.has_attestation
+            or state.attestation_issuer is None
+            or state.attestation_issuer not in policy_context.allowed_attestation_issuers
+        )
+    ):
+        denial_reason = "attestation_issuer_default_deny"
     if denial_reason is None and state.signature_state == "unsigned":
         denial_reason = "signature_missing_default_deny"
     if denial_reason is None and state.signature_state == "key_missing":

@@ -26,7 +26,7 @@ from .explain import explain
 from .export import export_provenance_log, export_sbom_snapshot
 from .importer import append_imported_records, import_records
 from .log import AppendOnlyEventLog, EventLog
-from .policy import PolicyContext, PolicyDecision, evaluate_retrieval_policy
+from .policy import ATTESTATION_TRUST_LEVELS, PolicyContext, PolicyDecision, evaluate_retrieval_policy
 from .replay import MemoryState, replay_events
 from .retrieval import GetOutcome, QueryAuditSummary, RetrievalRecord, get, get_outcome, query, query_with_summary
 from .runtime import AuditSink, MemoryRuntime, open_runtime
@@ -38,6 +38,7 @@ __all__ = [
     "AppendOnlyEventLog",
     "AuditSink",
     "Attestation",
+    "ATTESTATION_TRUST_LEVELS",
     "GetOutcome",
     "DecayPolicy",
     "EventLog",

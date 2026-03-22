@@ -88,3 +88,28 @@ python -m agentic_memory_fabric.cli --state-file .amf-state.json \
   --audit-jsonl .amf-audit.jsonl \
   query
 ```
+
+## Opt-In Attestation Gates
+
+Attestation checks are opt-in through `policy_context`; default retrieval behavior is unchanged.
+
+HTTP query example:
+
+```json
+{
+  "policy_context": {
+    "require_attestation": true,
+    "min_attestation_trust_level": "medium",
+    "allowed_attestation_issuers": ["issuer-alpha", "issuer-beta"]
+  }
+}
+```
+
+CLI query example:
+
+```bash
+python -m agentic_memory_fabric.cli --state-file .amf-state.json \
+  --tenant-id tenant-alpha \
+  query \
+  --policy-json '{"require_attestation": true, "min_attestation_trust_level": "medium", "allowed_attestation_issuers": ["issuer-alpha"]}'
+```

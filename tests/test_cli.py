@@ -23,6 +23,7 @@ class CliTests(unittest.TestCase):
         event_id: str = "99999999-9999-4999-8999-999999999999",
         event_type: str = "created",
         previous_events: list[str] | None = None,
+        attestation: dict | None = None,
     ) -> str:
         if previous_events is None:
             previous_events = []
@@ -40,6 +41,10 @@ class CliTests(unittest.TestCase):
             }
         )
         event_dict = event.to_dict()
+        if attestation is not None:
+            event_dict["attestation"] = attestation
+            event = EventEnvelope.from_dict(event_dict)
+            event_dict = event.to_dict()
         event_dict["signature"] = {
             "alg": "hmac-sha256",
             "key_id": "dev-key",
@@ -337,3 +342,131 @@ class CliTests(unittest.TestCase):
             lines = [line for line in audit_file.read_text(encoding="utf-8").splitlines() if line.strip()]
             parsed = [json.loads(line) for line in lines]
             self.assertTrue(any(event.get("type") == "memory.query" for event in parsed))
+
+    def test_cli_query_policy_context_attestation_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = str(pathlib.Path(tmpdir) / "state.json")
+            keyring_json = '{"dev-key":{"key":"super-secret","status":"active"}}'
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "ingest-event",
+                    "--event-json",
+                    self._signed_event_json(),
+                ],
+                stdout=io.StringIO(),
+            )
+
+            out_denied = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "query",
+                    "--policy-json",
+                    '{"require_attestation": true}',
+                ],
+                stdout=out_denied,
+            )
+            denied_payload = json.loads(out_denied.getvalue())
+            self.assertEqual(denied_payload["count"], 0)
+
+            out_override = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "--capabilities-json",
+                    '["override_retrieval_denials"]',
+                    "query",
+                    "--policy-json",
+                    '{"require_attestation": true}',
+                ],
+                stdout=out_override,
+            )
+            override_payload = json.loads(out_override.getvalue())
+            self.assertEqual(override_payload["count"], 1)
+            self.assertEqual(
+                override_payload["records"][0]["denial_reason"],
+                "attestation_required_default_deny",
+            )
+
+    def test_cli_query_policy_context_attestation_issuer_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = str(pathlib.Path(tmpdir) / "state.json")
+            keyring_json = '{"dev-key":{"key":"super-secret","status":"active"}}'
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "ingest-event",
+                    "--event-json",
+                    self._signed_event_json(
+                        attestation={
+                            "issuer": "issuer-gamma",
+                            "issued_at": "2026-03-22T00:00:00Z",
+                            "trust_level": "high",
+                        }
+                    ),
+                ],
+                stdout=io.StringIO(),
+            )
+
+            out_denied = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "query",
+                    "--policy-json",
+                    '{"allowed_attestation_issuers": ["issuer-alpha"]}',
+                ],
+                stdout=out_denied,
+            )
+            denied_payload = json.loads(out_denied.getvalue())
+            self.assertEqual(denied_payload["count"], 0)
+
+            out_override = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "--capabilities-json",
+                    '["override_retrieval_denials"]',
+                    "query",
+                    "--policy-json",
+                    '{"allowed_attestation_issuers": ["issuer-alpha"]}',
+                ],
+                stdout=out_override,
+            )
+            override_payload = json.loads(out_override.getvalue())
+            self.assertEqual(override_payload["count"], 1)
+            self.assertEqual(
+                override_payload["records"][0]["denial_reason"],
+                "attestation_issuer_default_deny",
+            )

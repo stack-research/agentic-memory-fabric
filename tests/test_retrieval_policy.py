@@ -1,6 +1,7 @@
 import pathlib
 import sys
 import unittest
+from dataclasses import replace
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -235,3 +236,76 @@ class RetrievalPolicyTests(unittest.TestCase):
         self.assertEqual(denied.outcome, "denied")
         self.assertEqual(denied.denial_reason, "quarantined_memory_default_deny")
         self.assertEqual(missing.outcome, "not_found")
+
+    def test_attestation_policy_is_opt_in_by_default(self) -> None:
+        records = query(self._state_map(), PolicyContext(tenant_id="tenant-alpha"))
+        self.assertEqual([record.memory_id for record in records], ["mem-trusted"])
+
+    def test_require_attestation_denies_unattested(self) -> None:
+        records = query(
+            self._state_map(),
+            PolicyContext(tenant_id="tenant-alpha", require_attestation=True),
+        )
+        self.assertEqual(records, [])
+
+    def test_min_attestation_trust_level_filters_low_attestation(self) -> None:
+        state_map = self._state_map()
+        state_map["mem-trusted"] = replace(
+            state_map["mem-trusted"],
+            has_attestation=True,
+            attestation_trust_level="low",
+            attestation_issuer="issuer-a",
+        )
+        state_map["mem-attested-high"] = MemoryState(
+            memory_id="mem-attested-high",
+            tenant_id="tenant-alpha",
+            version=1,
+            trust_state="trusted",
+            lifecycle_state=LIFECYCLE_ACTIVE,
+            last_event_id="88888888-8888-4888-8888-888888888888",
+            last_sequence=9,
+            last_event_type="attested",
+            signature_state="verified",
+            last_tick=9,
+            payload_hash="sha256:" + ("8" * 64),
+            previous_events=(),
+            has_attestation=True,
+            attestation_trust_level="high",
+            attestation_issuer="issuer-b",
+        )
+        records = query(
+            state_map,
+            PolicyContext(tenant_id="tenant-alpha", min_attestation_trust_level="medium"),
+        )
+        self.assertEqual([record.memory_id for record in records], ["mem-attested-high"])
+
+    def test_allowed_attestation_issuers_gate(self) -> None:
+        state_map = self._state_map()
+        state_map["mem-trusted"] = replace(
+            state_map["mem-trusted"],
+            has_attestation=True,
+            attestation_trust_level="high",
+            attestation_issuer="issuer-a",
+        )
+        records = query(
+            state_map,
+            PolicyContext(
+                tenant_id="tenant-alpha",
+                allowed_attestation_issuers=frozenset({"issuer-b"}),
+            ),
+        )
+        self.assertEqual(records, [])
+
+    def test_override_keeps_attestation_denial_reason(self) -> None:
+        records = query(
+            self._state_map(),
+            PolicyContext(
+                tenant_id="tenant-alpha",
+                require_attestation=True,
+                capabilities=frozenset({OVERRIDE_CAPABILITY}),
+                trusted_subject=True,
+            ),
+        )
+        by_id = {record.memory_id: record for record in records}
+        self.assertIn("mem-trusted", by_id)
+        self.assertEqual(by_id["mem-trusted"].denial_reason, "attestation_required_default_deny")

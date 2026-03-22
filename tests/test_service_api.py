@@ -36,6 +36,7 @@ class ServiceApiTests(unittest.TestCase):
         event_id: str = "99999999-9999-4999-8999-999999999999",
         event_type: str = "created",
         previous_events: list[str] | None = None,
+        attestation: dict | None = None,
         key_id: str = "dev-key",
         key: bytes = b"super-secret",
     ) -> dict:
@@ -54,6 +55,8 @@ class ServiceApiTests(unittest.TestCase):
                 "payload_hash": "sha256:" + ("a" * 64),
             }
         )
+        if attestation is not None:
+            event = EventEnvelope.from_dict({**event.to_dict(), "attestation": attestation})
         event_dict = event.to_dict()
         event_dict["signature"] = {
             "alg": "hmac-sha256",
@@ -378,6 +381,91 @@ class ServiceApiTests(unittest.TestCase):
         ]
         self.assertEqual(len(http_query_events), 1)
         self.assertEqual(http_query_events[0]["http_status"], 200)
+
+    def test_query_policy_context_attestation_gates_are_enforced(self) -> None:
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        app = ServiceApp(runtime=runtime, auth_tokens=AUTH_TOKENS)
+        status_ingest, _ = app.handle_request(
+            "POST",
+            "/ingest/event",
+            json_bytes({"event": self._signed_event()}),
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_ingest, 200)
+
+        status_default, payload_default = app.handle_request(
+            "POST",
+            "/query",
+            b"{}",
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_default, 200)
+        self.assertEqual(payload_default["count"], 1)
+
+        status_attested, payload_attested = app.handle_request(
+            "POST",
+            "/query",
+            b'{"policy_context":{"require_attestation":true}}',
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_attested, 200)
+        self.assertEqual(payload_attested["count"], 0)
+
+        status_override, payload_override = app.handle_request(
+            "POST",
+            "/query",
+            b'{"policy_context":{"require_attestation":true,"capabilities":["override_retrieval_denials"]}}',
+            headers={"x-tenant-id": "tenant-alpha", "x-auth-token": "token-auditor"},
+        )
+        self.assertEqual(status_override, 200)
+        self.assertEqual(payload_override["count"], 1)
+        self.assertEqual(
+            payload_override["records"][0]["denial_reason"],
+            "attestation_required_default_deny",
+        )
+
+    def test_query_policy_context_attestation_issuer_gate_passthrough(self) -> None:
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        app = ServiceApp(runtime=runtime, auth_tokens=AUTH_TOKENS)
+        status_ingest, _ = app.handle_request(
+            "POST",
+            "/ingest/event",
+            json_bytes(
+                {
+                    "event": self._signed_event(
+                        attestation={
+                            "issuer": "issuer-gamma",
+                            "issued_at": "2026-03-22T00:00:00Z",
+                            "trust_level": "high",
+                        }
+                    )
+                }
+            ),
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_ingest, 200)
+
+        status_denied, payload_denied = app.handle_request(
+            "POST",
+            "/query",
+            b'{"policy_context":{"allowed_attestation_issuers":["issuer-alpha"]}}',
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_denied, 200)
+        self.assertEqual(payload_denied["count"], 0)
+
+        status_override, payload_override = app.handle_request(
+            "POST",
+            "/query",
+            b'{"policy_context":{"allowed_attestation_issuers":["issuer-alpha"],"capabilities":["override_retrieval_denials"]}}',
+            headers={"x-tenant-id": "tenant-alpha", "x-auth-token": "token-auditor"},
+        )
+        self.assertEqual(status_override, 200)
+        self.assertEqual(payload_override["count"], 1)
+        self.assertEqual(
+            payload_override["records"][0]["denial_reason"],
+            "attestation_issuer_default_deny",
+        )
 
 
 def json_bytes(value: dict) -> bytes:

@@ -13,7 +13,7 @@ from .explain import explain
 from .export import export_provenance_log, export_sbom_snapshot
 from .importer import append_imported_records
 from .log import AppendOnlyEventLog, EventLog
-from .policy import PolicyContext
+from .policy import ATTESTATION_TRUST_LEVELS, PolicyContext
 from .replay import MemoryState, replay_events
 from .retrieval import get_outcome, query_with_summary
 from .sqlite_store import SQLiteEventLog
@@ -54,6 +54,29 @@ class MemoryRuntime:
                     else None
                 ),
             )
+        min_attestation_trust_level_raw = source.get("min_attestation_trust_level")
+        min_attestation_trust_level: str | None = None
+        if min_attestation_trust_level_raw is not None:
+            min_attestation_trust_level = str(min_attestation_trust_level_raw).strip().lower()
+            if min_attestation_trust_level not in ATTESTATION_TRUST_LEVELS:
+                raise ValueError(
+                    "min_attestation_trust_level must be one of "
+                    f"{list(ATTESTATION_TRUST_LEVELS)} when provided"
+                )
+        allowed_attestation_issuers_raw = source.get("allowed_attestation_issuers")
+        allowed_attestation_issuers: frozenset[str] = frozenset()
+        if allowed_attestation_issuers_raw is not None:
+            if isinstance(allowed_attestation_issuers_raw, (str, bytes)) or not isinstance(
+                allowed_attestation_issuers_raw, list
+            ):
+                raise ValueError("allowed_attestation_issuers must be a JSON array when provided")
+            normalized_issuers: list[str] = []
+            for issuer in allowed_attestation_issuers_raw:
+                issuer_text = str(issuer).strip()
+                if not issuer_text:
+                    raise ValueError("allowed_attestation_issuers entries must be non-empty strings")
+                normalized_issuers.append(issuer_text)
+            allowed_attestation_issuers = frozenset(normalized_issuers)
         tenant_id = trusted.get("tenant_id")
         if tenant_id is None:
             tenant_id = source.get("tenant_id")
@@ -67,6 +90,9 @@ class MemoryRuntime:
                 int(source["current_tick"]) if source.get("current_tick") is not None else None
             ),
             decay_policy=decay_policy,
+            require_attestation=bool(source.get("require_attestation", False)),
+            min_attestation_trust_level=min_attestation_trust_level,
+            allowed_attestation_issuers=allowed_attestation_issuers,
         )
 
     def _expected_tenant_id(self, trusted_context: Mapping[str, Any] | None = None) -> str | None:

@@ -18,16 +18,19 @@ class ImporterTests(unittest.TestCase):
     def _records(self) -> list[dict]:
         return [
             {
+                "tenant_id": "tenant-alpha",
                 "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
                 "payload": {"name": "alpha"},
                 "source_id": "legacy-1",
             },
             {
+                "tenant_id": "tenant-alpha",
                 "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
                 "payload": {"name": "alpha-v2"},
                 "source_id": "legacy-2",
             },
             {
+                "tenant_id": "tenant-alpha",
                 "memory_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
                 "payload": {"name": "bravo"},
                 "source_id": "legacy-3",
@@ -82,11 +85,15 @@ class ImporterTests(unittest.TestCase):
         self.assertTrue(all(entry["event_type"] == "imported" for entry in prov["events"]))
 
         state_map = replay_events(events)
-        default_snapshot = export_sbom_snapshot(state_map, PolicyContext())
+        default_snapshot = export_sbom_snapshot(state_map, PolicyContext(tenant_id="tenant-alpha"))
         self.assertEqual(default_snapshot["count"], 0)
         override_snapshot = export_sbom_snapshot(
             state_map,
-            PolicyContext(capabilities=frozenset({OVERRIDE_CAPABILITY})),
+            PolicyContext(
+                capabilities=frozenset({OVERRIDE_CAPABILITY}),
+                tenant_id="tenant-alpha",
+                trusted_subject=True,
+            ),
         )
         self.assertEqual(override_snapshot["count"], 2)
 

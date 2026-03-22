@@ -229,6 +229,7 @@ class EventEnvelope:
     sequence: int
     timestamp: EventTimestamp
     actor: Actor
+    tenant_id: str
     memory_id: str
     event_type: str
     previous_events: tuple[str, ...] = field(default_factory=tuple)
@@ -259,6 +260,7 @@ class EventEnvelope:
             sequence=data["sequence"],
             timestamp=timestamp,
             actor=actor,
+            tenant_id=data["tenant_id"],
             memory_id=data["memory_id"],
             event_type=data["event_type"],
             previous_events=tuple(data["previous_events"]),
@@ -275,6 +277,7 @@ class EventEnvelope:
             "sequence": self.sequence,
             "timestamp": self.timestamp.to_dict(),
             "actor": self.actor.to_dict(),
+            "tenant_id": self.tenant_id,
             "memory_id": self.memory_id,
             "event_type": self.event_type,
             "previous_events": list(self.previous_events),
@@ -297,6 +300,7 @@ def validate_event_envelope(data: Mapping[str, Any]) -> None:
         "sequence",
         "timestamp",
         "actor",
+        "tenant_id",
         "memory_id",
         "event_type",
         "previous_events",
@@ -320,6 +324,7 @@ def validate_event_envelope(data: Mapping[str, Any]) -> None:
     if not isinstance(data["actor"], Mapping):
         raise ValueError("actor must be an object")
     Actor.from_dict(data["actor"])
+    _require_non_empty_string(data["tenant_id"], field_name="tenant_id")
 
     event_type = _require_non_empty_string(data["event_type"], field_name="event_type")
     if event_type not in VALID_EVENT_TYPES:

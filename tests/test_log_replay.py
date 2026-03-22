@@ -28,6 +28,7 @@ def _event(
         "sequence": sequence,
         "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": sequence},
         "actor": {"id": "svc-memory", "kind": "service"},
+        "tenant_id": "tenant-alpha",
         "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         "event_type": event_type,
         "previous_events": previous_events,

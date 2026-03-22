@@ -21,6 +21,7 @@ def _base_event_dict() -> dict:
         "sequence": 1,
         "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 1},
         "actor": {"id": "svc-memory", "kind": "service"},
+        "tenant_id": "tenant-alpha",
         "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
         "event_type": "created",
         "previous_events": [],
@@ -47,7 +48,11 @@ class SignaturePolicyTests(unittest.TestCase):
 
     def test_verified_signature_allows_retrieval(self) -> None:
         state_map = self._state_from_log(self._signed_event())
-        record = get("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", state_map, PolicyContext())
+        record = get(
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            state_map,
+            PolicyContext(tenant_id="tenant-alpha"),
+        )
         self.assertIsNotNone(record)
         assert record is not None
         self.assertEqual(record.signature_state, "verified")
@@ -56,6 +61,13 @@ class SignaturePolicyTests(unittest.TestCase):
         unsigned_state = self._state_from_log(EventEnvelope.from_dict(_base_event_dict()))
         self.assertIsNone(
             get("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", unsigned_state, PolicyContext())
+        )
+        self.assertIsNone(
+            get(
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                unsigned_state,
+                PolicyContext(tenant_id="tenant-alpha"),
+            )
         )
 
         invalid_dict = _base_event_dict()
@@ -69,13 +81,24 @@ class SignaturePolicyTests(unittest.TestCase):
         self.assertIsNone(
             get("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", invalid_state, PolicyContext())
         )
+        self.assertIsNone(
+            get(
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                invalid_state,
+                PolicyContext(tenant_id="tenant-alpha"),
+            )
+        )
 
     def test_override_allows_unsigned_with_explicit_reason(self) -> None:
         unsigned_state = self._state_from_log(EventEnvelope.from_dict(_base_event_dict()))
         record = get(
             "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             unsigned_state,
-            PolicyContext(capabilities=frozenset({OVERRIDE_CAPABILITY})),
+            PolicyContext(
+                capabilities=frozenset({OVERRIDE_CAPABILITY}),
+                tenant_id="tenant-alpha",
+                trusted_subject=True,
+            ),
         )
         self.assertIsNotNone(record)
         assert record is not None

@@ -10,6 +10,9 @@ from .replay import LIFECYCLE_DELETED, MemoryState
 
 OVERRIDE_CAPABILITY = "override_retrieval_denials"
 OVERRIDE_ROLES = frozenset({"auditor", "debug"})
+NON_OVERRIDABLE_DENIALS = frozenset(
+    {"tenant_scope_required_default_deny", "tenant_scope_mismatch_default_deny"}
+)
 
 
 @dataclass(frozen=True)
@@ -17,10 +20,14 @@ class PolicyContext:
     role: str = "runtime"
     capabilities: frozenset[str] = field(default_factory=frozenset)
     allow_overrides: bool = False
+    tenant_id: str | None = None
+    trusted_subject: bool = False
     current_tick: int | None = None
     decay_policy: DecayPolicy | None = None
 
     def can_override(self) -> bool:
+        if not self.trusted_subject:
+            return False
         return (
             self.allow_overrides
             or self.role in OVERRIDE_ROLES
@@ -39,7 +46,11 @@ class PolicyDecision:
 def evaluate_retrieval_policy(state: MemoryState, policy_context: PolicyContext) -> PolicyDecision:
     denial_reason: str | None = None
 
-    if state.lifecycle_state == LIFECYCLE_DELETED:
+    if policy_context.tenant_id is None:
+        denial_reason = "tenant_scope_required_default_deny"
+    elif state.tenant_id != policy_context.tenant_id:
+        denial_reason = "tenant_scope_mismatch_default_deny"
+    if denial_reason is None and state.lifecycle_state == LIFECYCLE_DELETED:
         denial_reason = "deleted_memory_default_deny"
     if denial_reason is None and state.trust_state == "quarantined":
         denial_reason = "quarantined_memory_default_deny"
@@ -62,6 +73,9 @@ def evaluate_retrieval_policy(state: MemoryState, policy_context: PolicyContext)
 
     if denial_reason is None:
         return PolicyDecision(allowed=True, why_sound="trusted_active_under_policy")
+
+    if denial_reason in NON_OVERRIDABLE_DENIALS:
+        return PolicyDecision(allowed=False, why_sound="policy_denied", denial_reason=denial_reason)
 
     if policy_context.can_override():
         return PolicyDecision(

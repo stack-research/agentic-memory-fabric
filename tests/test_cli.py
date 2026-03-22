@@ -23,6 +23,8 @@ class CliTests(unittest.TestCase):
                 [
                     "--state-file",
                     state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
                     "import-records",
                     "--records-json",
                     (
@@ -42,7 +44,10 @@ class CliTests(unittest.TestCase):
             self.assertEqual(imported["events"][0]["event_type"], "imported")
 
             out_default = io.StringIO()
-            run_cli(["--state-file", state_file, "query"], stdout=out_default)
+            run_cli(
+                ["--state-file", state_file, "--tenant-id", "tenant-alpha", "query"],
+                stdout=out_default,
+            )
             query_default = json.loads(out_default.getvalue())
             self.assertEqual(query_default["count"], 0)
 
@@ -51,9 +56,11 @@ class CliTests(unittest.TestCase):
                 [
                     "--state-file",
                     state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--capabilities-json",
+                    '["override_retrieval_denials"]',
                     "query",
-                    "--policy-json",
-                    '{"capabilities":["override_retrieval_denials"]}',
                 ],
                 stdout=out_override,
             )
@@ -65,6 +72,10 @@ class CliTests(unittest.TestCase):
                 [
                     "--state-file",
                     state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--capabilities-json",
+                    '["override_retrieval_denials"]',
                     "explain",
                     "--memory-id",
                     "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -75,9 +86,15 @@ class CliTests(unittest.TestCase):
             self.assertEqual(explain_payload["trace"][0]["event_type"], "imported")
 
             out_prov_a = io.StringIO()
-            run_cli(["--state-file", state_file, "export-provenance"], stdout=out_prov_a)
+            run_cli(
+                ["--state-file", state_file, "--tenant-id", "tenant-alpha", "export-provenance"],
+                stdout=out_prov_a,
+            )
             out_prov_b = io.StringIO()
-            run_cli(["--state-file", state_file, "export-provenance"], stdout=out_prov_b)
+            run_cli(
+                ["--state-file", state_file, "--tenant-id", "tenant-alpha", "export-provenance"],
+                stdout=out_prov_b,
+            )
             self.assertEqual(out_prov_a.getvalue(), out_prov_b.getvalue())
 
     def test_cli_db_persists_across_invocations(self) -> None:
@@ -89,6 +106,8 @@ class CliTests(unittest.TestCase):
                 [
                     "--db",
                     db_file,
+                    "--tenant-id",
+                    "tenant-alpha",
                     "import-records",
                     "--records-json",
                     (
@@ -111,9 +130,11 @@ class CliTests(unittest.TestCase):
                 [
                     "--db",
                     db_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--capabilities-json",
+                    '["override_retrieval_denials"]',
                     "query",
-                    "--policy-json",
-                    '{"capabilities":["override_retrieval_denials"]}',
                 ],
                 stdout=out_query,
             )
@@ -121,6 +142,9 @@ class CliTests(unittest.TestCase):
             self.assertEqual(query_payload["count"], 1)
 
             out_prov = io.StringIO()
-            run_cli(["--db", db_file, "export-provenance"], stdout=out_prov)
+            run_cli(
+                ["--db", db_file, "--tenant-id", "tenant-alpha", "export-provenance"],
+                stdout=out_prov,
+            )
             provenance = json.loads(out_prov.getvalue())
             self.assertEqual(provenance["count"], 1)

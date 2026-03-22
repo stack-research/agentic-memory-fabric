@@ -11,6 +11,7 @@ from .replay import MemoryState
 @dataclass(frozen=True)
 class RetrievalRecord:
     memory_id: str
+    tenant_id: str
     trust_state: str
     version: int
     last_event_id: str
@@ -24,6 +25,7 @@ class RetrievalRecord:
 def _to_retrieval_record(state: MemoryState, *, why_sound: str, denial_reason: str | None, override_used: bool) -> RetrievalRecord:
     return RetrievalRecord(
         memory_id=state.memory_id,
+        tenant_id=state.tenant_id,
         trust_state=state.trust_state,
         version=state.version,
         last_event_id=state.last_event_id,

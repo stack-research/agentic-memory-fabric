@@ -19,6 +19,7 @@ def export_sbom_snapshot(
     snapshot_records = [
         {
             "memory_id": record.memory_id,
+            "tenant_id": record.tenant_id,
             "trust_state": record.trust_state,
             "version": record.version,
             "last_event_id": record.last_event_id,
@@ -41,6 +42,7 @@ def export_provenance_log(
     events: Iterable[EventEnvelope],
     sequence_range: tuple[int, int] | None = None,
     memory_id: str | None = None,
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """Export append-only provenance history with optional sequence/memory filters."""
     if sequence_range is not None:
@@ -53,6 +55,8 @@ def export_provenance_log(
     selected_events = []
     for event in sorted(events, key=lambda item: item.sequence):
         if memory_id is not None and event.memory_id != memory_id:
+            continue
+        if tenant_id is not None and event.tenant_id != tenant_id:
             continue
         if start is not None and (event.sequence < start or event.sequence > end):
             continue
@@ -67,4 +71,6 @@ def export_provenance_log(
         out["sequence_range"] = {"start": start, "end": end}
     if memory_id is not None:
         out["memory_id"] = memory_id
+    if tenant_id is not None:
+        out["tenant_id"] = tenant_id
     return out

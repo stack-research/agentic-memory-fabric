@@ -31,10 +31,15 @@ class MemoryRuntime:
     def _signature_verifier(self, event: EventEnvelope) -> str:
         return verify_event_signature(event, key_resolver=self._key_resolver)
 
-    def _build_policy_context(self, raw: Mapping[str, Any] | None = None) -> PolicyContext:
-        if raw is None:
-            return PolicyContext()
-        decay_policy_raw = raw.get("decay_policy")
+    def _build_policy_context(
+        self,
+        raw: Mapping[str, Any] | None = None,
+        *,
+        trusted_context: Mapping[str, Any] | None = None,
+    ) -> PolicyContext:
+        source = raw or {}
+        trusted = trusted_context or {}
+        decay_policy_raw = source.get("decay_policy")
         decay_policy = None
         if isinstance(decay_policy_raw, Mapping):
             decay_policy = DecayPolicy(
@@ -45,15 +50,31 @@ class MemoryRuntime:
                     else None
                 ),
             )
+        tenant_id = trusted.get("tenant_id")
+        if tenant_id is None:
+            tenant_id = source.get("tenant_id")
         return PolicyContext(
-            role=str(raw.get("role", "runtime")),
-            capabilities=frozenset(raw.get("capabilities", [])),
-            allow_overrides=bool(raw.get("allow_overrides", False)),
+            role=str(trusted.get("role", "runtime")),
+            capabilities=frozenset(trusted.get("capabilities", [])),
+            allow_overrides=bool(trusted.get("allow_overrides", False)),
+            tenant_id=(str(tenant_id) if tenant_id is not None else None),
+            trusted_subject=trusted_context is not None,
             current_tick=(
-                int(raw["current_tick"]) if raw.get("current_tick") is not None else None
+                int(source["current_tick"]) if source.get("current_tick") is not None else None
             ),
             decay_policy=decay_policy,
         )
+
+    def _expected_tenant_id(self, trusted_context: Mapping[str, Any] | None = None) -> str | None:
+        if trusted_context is None:
+            return None
+        tenant_id = trusted_context.get("tenant_id")
+        if tenant_id is None:
+            return None
+        tenant_id_str = str(tenant_id).strip()
+        if not tenant_id_str:
+            raise ValueError("trusted_context.tenant_id must be non-empty when provided")
+        return tenant_id_str
 
     def state_map(self) -> dict[str, MemoryState]:
         return replay_events(
@@ -61,8 +82,17 @@ class MemoryRuntime:
             signature_states=self.log.signature_states(),
         )
 
-    def ingest_event(self, event_data: Mapping[str, Any]) -> EventEnvelope:
+    def ingest_event(
+        self,
+        event_data: Mapping[str, Any],
+        *,
+        expected_tenant_id: str | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
+    ) -> EventEnvelope:
         event = EventEnvelope.from_dict(event_data)
+        expected_tenant_id = expected_tenant_id or self._expected_tenant_id(trusted_context)
+        if expected_tenant_id is not None and event.tenant_id != expected_tenant_id:
+            raise ValueError("tenant mismatch between trusted context and event payload")
         self.log.append(event, signature_verifier=self._signature_verifier)
         return event
 
@@ -74,7 +104,18 @@ class MemoryRuntime:
         default_timestamp: str,
         start_sequence: int | None = None,
         default_tick: int | None = None,
+        tenant_id: str | None = None,
+        expected_tenant_id: str | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
     ) -> tuple[EventEnvelope, ...]:
+        expected_tenant_id = expected_tenant_id or self._expected_tenant_id(trusted_context)
+        effective_tenant_id = tenant_id
+        if expected_tenant_id is not None:
+            if effective_tenant_id is not None and effective_tenant_id != expected_tenant_id:
+                raise ValueError("tenant mismatch between trusted context and import request")
+            effective_tenant_id = expected_tenant_id
+        if effective_tenant_id is None:
+            raise ValueError("tenant_id is required for import_records")
         if start_sequence is None:
             start_sequence = len(self.log) + 1
         events = append_imported_records(
@@ -84,6 +125,7 @@ class MemoryRuntime:
             start_sequence=start_sequence,
             default_timestamp=default_timestamp,
             default_tick=default_tick,
+            tenant_id=effective_tenant_id,
         )
         return events
 
@@ -91,10 +133,11 @@ class MemoryRuntime:
         self,
         *,
         policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
         trust_states: set[str] | None = None,
         limit: int | None = None,
     ) -> list[dict[str, Any]]:
-        ctx = self._build_policy_context(policy_context)
+        ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
         records = retrieval_query(
             self.state_map(),
             ctx,
@@ -108,28 +151,56 @@ class MemoryRuntime:
         memory_id: str,
         *,
         policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any] | None:
-        ctx = self._build_policy_context(policy_context)
+        ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
         record = retrieval_get(memory_id, self.state_map(), ctx)
         return None if record is None else record.__dict__
 
-    def explain(self, memory_id: str) -> list[dict[str, Any]]:
-        return explain(memory_id, self.log.all_events())
+    def explain(
+        self,
+        memory_id: str,
+        *,
+        policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
+    ) -> list[dict[str, Any]]:
+        ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
+        state_map = self.state_map()
+        record = retrieval_get(memory_id, state_map, ctx)
+        if record is None:
+            return []
+        return explain(memory_id, self.log.all_events(), tenant_id=ctx.tenant_id)
 
-    def export_snapshot(self, *, policy_context: Mapping[str, Any] | None = None) -> dict[str, Any]:
-        ctx = self._build_policy_context(policy_context)
+    def export_snapshot(
+        self,
+        *,
+        policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
         return export_sbom_snapshot(self.state_map(), ctx)
 
     def export_provenance(
         self,
         *,
+        policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
         sequence_range: tuple[int, int] | None = None,
         memory_id: str | None = None,
     ) -> dict[str, Any]:
+        ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
+        if ctx.tenant_id is None and not ctx.can_override():
+            return {
+                "artifact_type": "provenance_log_slice",
+                "count": 0,
+                "events": [],
+                "denial_reason": "tenant_scope_required_default_deny",
+            }
         return export_provenance_log(
             self.log.all_events(),
             sequence_range=sequence_range,
             memory_id=memory_id,
+            tenant_id=ctx.tenant_id,
         )
 
 

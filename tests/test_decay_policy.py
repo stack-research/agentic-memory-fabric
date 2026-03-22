@@ -17,6 +17,7 @@ class DecayPolicyTests(unittest.TestCase):
     def _trusted_state(self, last_tick: int) -> MemoryState:
         return MemoryState(
             memory_id="mem-trusted",
+            tenant_id="tenant-alpha",
             version=1,
             trust_state="trusted",
             lifecycle_state=LIFECYCLE_ACTIVE,
@@ -56,7 +57,11 @@ class DecayPolicyTests(unittest.TestCase):
 
     def test_retrieval_denies_decay_expired_by_default(self) -> None:
         state_map = {"mem-trusted": self._trusted_state(last_tick=3)}
-        ctx = PolicyContext(current_tick=10, decay_policy=DecayPolicy(max_age_ticks=3))
+        ctx = PolicyContext(
+            tenant_id="tenant-alpha",
+            current_tick=10,
+            decay_policy=DecayPolicy(max_age_ticks=3),
+        )
         self.assertIsNone(get("mem-trusted", state_map, ctx))
 
     def test_override_allows_decay_expired_with_reason(self) -> None:
@@ -65,6 +70,8 @@ class DecayPolicyTests(unittest.TestCase):
             current_tick=10,
             decay_policy=DecayPolicy(max_age_ticks=3),
             capabilities=frozenset({OVERRIDE_CAPABILITY}),
+            tenant_id="tenant-alpha",
+            trusted_subject=True,
         )
         record = get("mem-trusted", state_map, ctx)
         self.assertIsNotNone(record)

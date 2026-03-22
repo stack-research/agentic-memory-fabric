@@ -15,6 +15,7 @@ LIFECYCLE_DELETED = "deleted"
 @dataclass(frozen=True)
 class MemoryState:
     memory_id: str
+    tenant_id: str
     version: int
     trust_state: str
     lifecycle_state: str
@@ -54,6 +55,7 @@ def replay_events(
 
         materialized[event.memory_id] = MemoryState(
             memory_id=event.memory_id,
+            tenant_id=event.tenant_id,
             version=version,
             trust_state=trust_state,
             lifecycle_state=lifecycle_state,

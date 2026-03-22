@@ -30,6 +30,7 @@ def _event(
             "sequence": sequence,
             "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": sequence},
             "actor": {"id": "svc-memory", "kind": "service"},
+            "tenant_id": "tenant-alpha",
             "memory_id": memory_id,
             "event_type": event_type,
             "previous_events": previous_events,
@@ -93,7 +94,7 @@ class ExplainExportTests(unittest.TestCase):
         events = self._events()
         signature_states = {event.event_id: "verified" for event in events}
         state_map = replay_events(events, signature_states=signature_states)
-        snapshot = export_sbom_snapshot(state_map, PolicyContext())
+        snapshot = export_sbom_snapshot(state_map, PolicyContext(tenant_id="tenant-alpha"))
         self.assertEqual(snapshot["artifact_type"], "memory_sbom_snapshot")
         self.assertEqual(snapshot["count"], 1)
         self.assertEqual(
@@ -107,7 +108,11 @@ class ExplainExportTests(unittest.TestCase):
         state_map = replay_events(events, signature_states=signature_states)
         snapshot = export_sbom_snapshot(
             state_map,
-            PolicyContext(capabilities=frozenset({OVERRIDE_CAPABILITY})),
+            PolicyContext(
+                capabilities=frozenset({OVERRIDE_CAPABILITY}),
+                tenant_id="tenant-alpha",
+                trusted_subject=True,
+            ),
         )
         self.assertEqual(snapshot["count"], 4)
         memory_ids = {record["memory_id"] for record in snapshot["records"]}
@@ -124,7 +129,7 @@ class ExplainExportTests(unittest.TestCase):
     def test_snapshot_default_denies_unsigned_signature_state(self) -> None:
         events = self._events()
         state_map = replay_events(events)
-        snapshot = export_sbom_snapshot(state_map, PolicyContext())
+        snapshot = export_sbom_snapshot(state_map, PolicyContext(tenant_id="tenant-alpha"))
         self.assertEqual(snapshot["count"], 0)
 
     def test_provenance_slice_contains_imported_events(self) -> None:
@@ -132,6 +137,7 @@ class ExplainExportTests(unittest.TestCase):
             [
                 {
                     "memory_id": "12121212-1212-4212-8212-121212121212",
+                    "tenant_id": "tenant-alpha",
                     "payload": {"k": "v"},
                     "source_id": "legacy-seed",
                 }

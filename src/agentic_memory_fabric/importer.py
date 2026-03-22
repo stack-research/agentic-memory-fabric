@@ -32,6 +32,7 @@ def import_records(
     start_sequence: int,
     default_timestamp: str,
     default_tick: int | None = None,
+    tenant_id: str | None = None,
 ) -> tuple[EventEnvelope, ...]:
     """Convert source records into deterministic imported EventEnvelope objects."""
     if start_sequence < 1:
@@ -49,6 +50,9 @@ def import_records(
         memory_id = str(record.get("memory_id", "")).strip()
         if not memory_id:
             raise ValueError("Each import record must include memory_id")
+        event_tenant_id = str(record.get("tenant_id", tenant_id or "")).strip()
+        if not event_tenant_id:
+            raise ValueError("Each import record must include tenant_id")
 
         payload = record.get("payload", {})
         payload_hash = record.get("payload_hash")
@@ -88,6 +92,7 @@ def import_records(
             "sequence": sequence,
             "timestamp": timestamp,
             "actor": actor_dict,
+            "tenant_id": event_tenant_id,
             "memory_id": memory_id,
             "event_type": "imported",
             "previous_events": previous_events,
@@ -116,6 +121,7 @@ def append_imported_records(
     start_sequence: int,
     default_timestamp: str,
     default_tick: int | None = None,
+    tenant_id: str | None = None,
 ) -> tuple[EventEnvelope, ...]:
     """Import records and append them to the event log as imported events."""
     events = import_records(
@@ -124,6 +130,7 @@ def append_imported_records(
         start_sequence=start_sequence,
         default_timestamp=default_timestamp,
         default_tick=default_tick,
+        tenant_id=tenant_id,
     )
     for event in events:
         log.append(event)

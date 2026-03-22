@@ -18,6 +18,7 @@ class RetrievalPolicyTests(unittest.TestCase):
         return {
             "mem-trusted": MemoryState(
                 memory_id="mem-trusted",
+                tenant_id="tenant-alpha",
                 version=2,
                 trust_state="trusted",
                 lifecycle_state=LIFECYCLE_ACTIVE,
@@ -31,6 +32,7 @@ class RetrievalPolicyTests(unittest.TestCase):
             ),
             "mem-quarantined": MemoryState(
                 memory_id="mem-quarantined",
+                tenant_id="tenant-alpha",
                 version=3,
                 trust_state="quarantined",
                 lifecycle_state=LIFECYCLE_ACTIVE,
@@ -44,6 +46,7 @@ class RetrievalPolicyTests(unittest.TestCase):
             ),
             "mem-expired": MemoryState(
                 memory_id="mem-expired",
+                tenant_id="tenant-alpha",
                 version=4,
                 trust_state="expired",
                 lifecycle_state=LIFECYCLE_ACTIVE,
@@ -57,6 +60,7 @@ class RetrievalPolicyTests(unittest.TestCase):
             ),
             "mem-deleted": MemoryState(
                 memory_id="mem-deleted",
+                tenant_id="tenant-alpha",
                 version=5,
                 trust_state="trusted",
                 lifecycle_state=LIFECYCLE_DELETED,
@@ -72,7 +76,7 @@ class RetrievalPolicyTests(unittest.TestCase):
 
     def test_get_allows_trusted_active_with_required_provenance_fields(self) -> None:
         state_map = self._state_map()
-        record = get("mem-trusted", state_map, PolicyContext())
+        record = get("mem-trusted", state_map, PolicyContext(tenant_id="tenant-alpha"))
         self.assertIsNotNone(record)
         assert record is not None
         self.assertEqual(record.trust_state, "trusted")
@@ -82,18 +86,22 @@ class RetrievalPolicyTests(unittest.TestCase):
 
     def test_get_default_denies_quarantined_expired_and_deleted(self) -> None:
         state_map = self._state_map()
-        ctx = PolicyContext()
+        ctx = PolicyContext(tenant_id="tenant-alpha")
         self.assertIsNone(get("mem-quarantined", state_map, ctx))
         self.assertIsNone(get("mem-expired", state_map, ctx))
         self.assertIsNone(get("mem-deleted", state_map, ctx))
 
     def test_query_default_returns_only_sound_memories(self) -> None:
-        records = query(self._state_map(), PolicyContext())
+        records = query(self._state_map(), PolicyContext(tenant_id="tenant-alpha"))
         self.assertEqual([record.memory_id for record in records], ["mem-trusted"])
 
     def test_override_path_includes_denied_states_with_reason(self) -> None:
         state_map = self._state_map()
-        override_ctx = PolicyContext(capabilities=frozenset({OVERRIDE_CAPABILITY}))
+        override_ctx = PolicyContext(
+            capabilities=frozenset({OVERRIDE_CAPABILITY}),
+            tenant_id="tenant-alpha",
+            trusted_subject=True,
+        )
 
         records = query(state_map, override_ctx)
         by_id = {record.memory_id: record for record in records}
@@ -110,7 +118,11 @@ class RetrievalPolicyTests(unittest.TestCase):
         state_map = self._state_map()
         records = query(
             state_map,
-            PolicyContext(capabilities=frozenset({OVERRIDE_CAPABILITY})),
+            PolicyContext(
+                capabilities=frozenset({OVERRIDE_CAPABILITY}),
+                tenant_id="tenant-alpha",
+                trusted_subject=True,
+            ),
             trust_states={"expired", "quarantined"},
             limit=1,
         )
@@ -119,5 +131,13 @@ class RetrievalPolicyTests(unittest.TestCase):
 
     def test_decay_denies_when_age_exceeds_threshold(self) -> None:
         state_map = self._state_map()
-        ctx = PolicyContext(current_tick=20, decay_policy=DecayPolicy(max_age_ticks=5))
+        ctx = PolicyContext(
+            tenant_id="tenant-alpha",
+            current_tick=20,
+            decay_policy=DecayPolicy(max_age_ticks=5),
+        )
         self.assertIsNone(get("mem-trusted", state_map, ctx))
+
+    def test_query_denies_cross_tenant_without_override(self) -> None:
+        records = query(self._state_map(), PolicyContext(tenant_id="tenant-bravo"))
+        self.assertEqual(records, [])

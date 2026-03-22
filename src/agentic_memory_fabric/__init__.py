@@ -7,6 +7,7 @@ from .crypto import (
     sign_event,
     verify_event_signature,
 )
+from .cli import run_cli
 from .events import (
     Actor,
     Attestation,
@@ -25,6 +26,8 @@ from .log import AppendOnlyEventLog
 from .policy import PolicyContext, PolicyDecision, evaluate_retrieval_policy
 from .replay import MemoryState, replay_events
 from .retrieval import RetrievalRecord, get, query
+from .runtime import MemoryRuntime
+from .service import ServiceApp, run_http_server
 
 __all__ = [
     "Actor",
@@ -51,10 +54,14 @@ __all__ = [
     "export_provenance_log",
     "export_sbom_snapshot",
     "get",
+    "MemoryRuntime",
+    "ServiceApp",
     "append_imported_records",
     "import_records",
     "query",
     "replay_events",
+    "run_cli",
+    "run_http_server",
     "sign_event",
     "validate_event_envelope",
     "verify_event_signature",

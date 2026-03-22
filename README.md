@@ -25,3 +25,34 @@ In this causal memory fabric, events shape memory spacetime; time and integrity 
 - Retrieval contract with hard deny for `quarantined`, `expired`, and `deleted` by default.
 - Explain API for ordered lineage traces.
 - Export APIs for policy-scoped snapshot and provenance log slices.
+
+## HTTP and CLI Quickstart
+
+### HTTP (in-process server)
+
+```python
+from agentic_memory_fabric.service import run_http_server
+
+server = run_http_server(host="127.0.0.1", port=8000)
+server.serve_forever()
+```
+
+Example endpoints:
+- `POST /ingest/event`
+- `POST /ingest/import`
+- `POST /query`
+- `GET /memory/{memory_id}/explain`
+- `POST /export/snapshot`
+- `POST /export/provenance`
+
+### CLI (JSON-first)
+
+```bash
+python -m agentic_memory_fabric.cli --state-file .amf-state.json import-records \
+  --records-json '[{"memory_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","payload":{"v":"x"},"source_id":"seed-1"}]' \
+  --actor-json '{"id":"migration-bot","kind":"service"}' \
+  --default-timestamp "2026-03-22T00:00:00Z"
+
+python -m agentic_memory_fabric.cli --state-file .amf-state.json query \
+  --policy-json '{"capabilities":["override_retrieval_denials"]}'
+```

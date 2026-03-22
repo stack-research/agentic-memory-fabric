@@ -21,6 +21,7 @@ class MemoryState:
     last_event_id: str
     last_sequence: int
     last_event_type: str
+    last_tick: int
     payload_hash: str
     previous_events: tuple[str, ...]
 
@@ -54,6 +55,8 @@ def replay_events(events: tuple[EventEnvelope, ...] | list[EventEnvelope]) -> di
             last_event_id=event.event_id,
             last_sequence=event.sequence,
             last_event_type=event.event_type,
+            # Prefer explicit logical tick and fall back to sequence for deterministic clocking.
+            last_tick=event.timestamp.tick if event.timestamp.tick is not None else event.sequence,
             payload_hash=event.payload_hash,
             previous_events=event.previous_events,
         )

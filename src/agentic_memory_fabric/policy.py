@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from .decay import DecayPolicy, evaluate_freshness
 from .replay import LIFECYCLE_DELETED, MemoryState
 
 
@@ -16,6 +17,8 @@ class PolicyContext:
     role: str = "runtime"
     capabilities: frozenset[str] = field(default_factory=frozenset)
     allow_overrides: bool = False
+    current_tick: int | None = None
+    decay_policy: DecayPolicy | None = None
 
     def can_override(self) -> bool:
         return (
@@ -42,6 +45,16 @@ def evaluate_retrieval_policy(state: MemoryState, policy_context: PolicyContext)
         denial_reason = "quarantined_memory_default_deny"
     elif state.trust_state == "expired":
         denial_reason = "expired_memory_default_deny"
+    elif policy_context.decay_policy is not None:
+        if policy_context.current_tick is None:
+            raise ValueError("current_tick is required when decay_policy is configured")
+        freshness = evaluate_freshness(
+            policy=policy_context.decay_policy,
+            current_tick=policy_context.current_tick,
+            last_tick=state.last_tick,
+        )
+        if not freshness.is_fresh:
+            denial_reason = "decay_expired_default_deny"
 
     if denial_reason is None:
         return PolicyDecision(allowed=True, why_sound="trusted_active_under_policy")

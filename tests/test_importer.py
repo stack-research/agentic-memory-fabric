@@ -8,6 +8,7 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from agentic_memory_fabric.export import export_provenance_log, export_sbom_snapshot
+from agentic_memory_fabric.crypto import sign_event, verify_event_signature
 from agentic_memory_fabric.importer import append_imported_records, import_records
 from agentic_memory_fabric.log import AppendOnlyEventLog
 from agentic_memory_fabric.policy import OVERRIDE_CAPABILITY, PolicyContext
@@ -117,3 +118,48 @@ class ImporterTests(unittest.TestCase):
         )
         self.assertEqual(len(log), 3)
         self.assertEqual(len(appended), 3)
+
+    def test_import_path_uses_same_signature_verifier_when_provided(self) -> None:
+        seed_record = {
+            "event_id": "11111111-1111-4111-8111-111111111111",
+            "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "tenant_id": "tenant-alpha",
+            "payload_hash": "sha256:" + ("a" * 64),
+            "previous_events": [],
+            "source_id": "seed-1",
+            "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 1},
+            "evidence_refs": [{"type": "opaque", "ref": "import:seed-1"}],
+        }
+        unsigned = import_records(
+            [seed_record],
+            actor={"id": "migration-bot", "kind": "service"},
+            start_sequence=1,
+            default_timestamp="2026-03-22T00:00:00Z",
+            tenant_id="tenant-alpha",
+        )[0]
+        sig = sign_event(unsigned, key_id="dev-key", key=b"super-secret")
+        record = {
+            "event_id": unsigned.event_id,
+            "memory_id": unsigned.memory_id,
+            "tenant_id": unsigned.tenant_id,
+            "payload_hash": unsigned.payload_hash,
+            "previous_events": [],
+            "source_id": "seed-1",
+            "timestamp": unsigned.timestamp.to_dict(),
+            "evidence_refs": [{"type": "opaque", "ref": "import:seed-1"}],
+            "signature": {"alg": "hmac-sha256", "key_id": "dev-key", "sig": sig},
+        }
+        log = AppendOnlyEventLog()
+        append_imported_records(
+            log,
+            [record],
+            actor={"id": "migration-bot", "kind": "service"},
+            start_sequence=1,
+            default_timestamp="2026-03-22T00:00:00Z",
+            tenant_id="tenant-alpha",
+            signature_verifier=lambda event: verify_event_signature(
+                event,
+                key_resolver=lambda key_id: {"dev-key": b"super-secret"}.get(key_id),
+            ),
+        )
+        self.assertEqual(log.signature_state_for_event(unsigned.event_id), "verified")

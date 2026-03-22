@@ -72,6 +72,34 @@ class RetrievalPolicyTests(unittest.TestCase):
                 payload_hash="sha256:" + ("d" * 64),
                 previous_events=("dddddddd-dddd-4ddd-8ddd-dddddddddddd",),
             ),
+            "mem-key-missing": MemoryState(
+                memory_id="mem-key-missing",
+                tenant_id="tenant-alpha",
+                version=1,
+                trust_state="trusted",
+                lifecycle_state=LIFECYCLE_ACTIVE,
+                last_event_id="55555555-5555-4555-8555-555555555555",
+                last_sequence=6,
+                last_event_type="updated",
+                signature_state="key_missing",
+                last_tick=6,
+                payload_hash="sha256:" + ("e" * 64),
+                previous_events=("eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",),
+            ),
+            "mem-key-revoked": MemoryState(
+                memory_id="mem-key-revoked",
+                tenant_id="tenant-alpha",
+                version=1,
+                trust_state="trusted",
+                lifecycle_state=LIFECYCLE_ACTIVE,
+                last_event_id="66666666-6666-4666-8666-666666666666",
+                last_sequence=7,
+                last_event_type="updated",
+                signature_state="revoked",
+                last_tick=7,
+                payload_hash="sha256:" + ("f" * 64),
+                previous_events=("ffffffff-ffff-4fff-8fff-ffffffffffff",),
+            ),
         }
 
     def test_get_allows_trusted_active_with_required_provenance_fields(self) -> None:
@@ -141,3 +169,44 @@ class RetrievalPolicyTests(unittest.TestCase):
     def test_query_denies_cross_tenant_without_override(self) -> None:
         records = query(self._state_map(), PolicyContext(tenant_id="tenant-bravo"))
         self.assertEqual(records, [])
+
+    def test_key_lifecycle_denials_are_deterministic(self) -> None:
+        records = query(
+            self._state_map(),
+            PolicyContext(
+                tenant_id="tenant-alpha",
+                capabilities=frozenset({OVERRIDE_CAPABILITY}),
+                trusted_subject=True,
+            ),
+        )
+        by_id = {record.memory_id: record for record in records}
+        self.assertEqual(by_id["mem-key-missing"].denial_reason, "signature_key_missing_default_deny")
+        self.assertEqual(by_id["mem-key-revoked"].denial_reason, "signature_key_revoked_default_deny")
+
+    def test_decay_precedence_over_signature_denial(self) -> None:
+        stale_invalid = MemoryState(
+            memory_id="mem-stale-invalid",
+            tenant_id="tenant-alpha",
+            version=1,
+            trust_state="trusted",
+            lifecycle_state=LIFECYCLE_ACTIVE,
+            last_event_id="77777777-7777-4777-8777-777777777777",
+            last_sequence=8,
+            last_event_type="updated",
+            signature_state="invalid",
+            last_tick=1,
+            payload_hash="sha256:" + ("1" * 64),
+            previous_events=(),
+        )
+        records = query(
+            {"mem-stale-invalid": stale_invalid},
+            PolicyContext(
+                tenant_id="tenant-alpha",
+                current_tick=20,
+                decay_policy=DecayPolicy(max_age_ticks=3),
+                capabilities=frozenset({OVERRIDE_CAPABILITY}),
+                trusted_subject=True,
+            ),
+        )
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0].denial_reason, "decay_expired_default_deny")

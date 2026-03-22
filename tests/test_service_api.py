@@ -10,6 +10,8 @@ if str(SRC_ROOT) not in sys.path:
 
 from agentic_memory_fabric.runtime import open_runtime
 from agentic_memory_fabric.service import ServiceApp, run_http_server
+from agentic_memory_fabric.crypto import KEY_STATUS_REVOKED, KeyMaterial, sign_event
+from agentic_memory_fabric.events import EventEnvelope
 
 TENANT_HEADER = {"x-tenant-id": "tenant-alpha"}
 AUTH_TOKENS = {
@@ -27,6 +29,28 @@ AUTH_TOKENS = {
 
 
 class ServiceApiTests(unittest.TestCase):
+    def _signed_created_event(self, *, key_id: str = "dev-key", key: bytes = b"super-secret") -> dict:
+        event = EventEnvelope.from_dict(
+            {
+                "event_id": "99999999-9999-4999-8999-999999999999",
+                "sequence": 1,
+                "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 1},
+                "actor": {"id": "svc-memory", "kind": "service"},
+                "tenant_id": "tenant-alpha",
+                "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "event_type": "created",
+                "previous_events": [],
+                "payload_hash": "sha256:" + ("a" * 64),
+            }
+        )
+        event_dict = event.to_dict()
+        event_dict["signature"] = {
+            "alg": "hmac-sha256",
+            "key_id": key_id,
+            "sig": sign_event(event, key_id=key_id, key=key),
+        }
+        return event_dict
+
     def test_import_endpoint_emits_imported_events_only(self) -> None:
         app = ServiceApp()
         status, payload = app.handle_request(
@@ -221,3 +245,61 @@ class ServiceApiTests(unittest.TestCase):
     def test_run_http_server_rejects_runtime_and_db_path_together(self) -> None:
         with self.assertRaisesRegex(ValueError, "either runtime or db_path"):
             run_http_server(runtime=open_runtime(), db_path="events.db")
+
+    def test_signed_ingest_with_keyring_allows_query_without_override(self) -> None:
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        app = ServiceApp(runtime=runtime)
+        status_ingest, _payload_ingest = app.handle_request(
+            "POST",
+            "/ingest/event",
+            json_bytes({"event": self._signed_created_event()}),
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_ingest, 200)
+        status_query, payload_query = app.handle_request(
+            "POST",
+            "/query",
+            b"{}",
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_query, 200)
+        self.assertEqual(payload_query["count"], 1)
+        self.assertEqual(payload_query["records"][0]["signature_state"], "verified")
+
+    def test_revoked_key_signature_denied_by_default(self) -> None:
+        runtime = open_runtime(
+            keyring={"dev-key": KeyMaterial(key=b"super-secret", status=KEY_STATUS_REVOKED)}
+        )
+        app = ServiceApp(runtime=runtime, auth_tokens=AUTH_TOKENS)
+        app.handle_request(
+            "POST",
+            "/ingest/event",
+            json_bytes({"event": self._signed_created_event()}),
+            headers=TENANT_HEADER,
+        )
+        status_default, payload_default = app.handle_request(
+            "POST",
+            "/query",
+            b"{}",
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_default, 200)
+        self.assertEqual(payload_default["count"], 0)
+        status_override, payload_override = app.handle_request(
+            "POST",
+            "/query",
+            b'{"policy_context":{"capabilities":["override_retrieval_denials"]}}',
+            headers={"x-tenant-id": "tenant-alpha", "x-auth-token": "token-auditor"},
+        )
+        self.assertEqual(status_override, 200)
+        self.assertEqual(payload_override["count"], 1)
+        self.assertEqual(
+            payload_override["records"][0]["denial_reason"],
+            "signature_key_revoked_default_deny",
+        )
+
+
+def json_bytes(value: dict) -> bytes:
+    import json
+
+    return json.dumps(value, sort_keys=True).encode("utf-8")

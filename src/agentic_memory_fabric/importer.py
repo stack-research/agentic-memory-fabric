@@ -8,7 +8,7 @@ from typing import Any, Iterable, Mapping
 from uuid import NAMESPACE_URL, uuid5
 
 from .events import Actor, EventEnvelope
-from .log import EventLog
+from .log import EventLog, SignatureVerifier
 
 
 def _canonical_json(value: Any) -> str:
@@ -122,6 +122,7 @@ def append_imported_records(
     default_timestamp: str,
     default_tick: int | None = None,
     tenant_id: str | None = None,
+    signature_verifier: SignatureVerifier | None = None,
 ) -> tuple[EventEnvelope, ...]:
     """Import records and append them to the event log as imported events."""
     events = import_records(
@@ -133,5 +134,5 @@ def append_imported_records(
         tenant_id=tenant_id,
     )
     for event in events:
-        log.append(event)
+        log.append(event, signature_verifier=signature_verifier)
     return events

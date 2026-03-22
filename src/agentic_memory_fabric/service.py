@@ -9,6 +9,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Mapping
 from urllib.parse import urlparse
 
+from .crypto import KeyMaterial
 from .runtime import MemoryRuntime, open_runtime
 
 
@@ -197,10 +198,11 @@ def run_http_server(
     port: int = 8000,
     runtime: MemoryRuntime | None = None,
     db_path: str | None = None,
+    keyring: Mapping[str, bytes | str | KeyMaterial] | None = None,
 ) -> ThreadingHTTPServer:
     if runtime is not None and db_path is not None:
         raise ValueError("provide either runtime or db_path, not both")
-    app_runtime = runtime or open_runtime(db_path=db_path)
+    app_runtime = runtime or open_runtime(db_path=db_path, keyring=keyring)
     app = ServiceApp(runtime=app_runtime)
     server = ThreadingHTTPServer((host, port), create_http_handler(app))
     return server

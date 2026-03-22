@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from .crypto import verify_event_signature
+from .crypto import KeyMaterial, verify_event_signature
 from .decay import DecayPolicy
 from .events import EventEnvelope
 from .explain import explain
@@ -23,9 +23,9 @@ from .sqlite_store import SQLiteEventLog
 @dataclass
 class MemoryRuntime:
     log: EventLog = field(default_factory=AppendOnlyEventLog)
-    keyring: dict[str, bytes | str] = field(default_factory=dict)
+    keyring: dict[str, bytes | str | KeyMaterial] = field(default_factory=dict)
 
-    def _key_resolver(self, key_id: str) -> bytes | str | None:
+    def _key_resolver(self, key_id: str) -> bytes | str | KeyMaterial | None:
         return self.keyring.get(key_id)
 
     def _signature_verifier(self, event: EventEnvelope) -> str:
@@ -126,6 +126,7 @@ class MemoryRuntime:
             default_timestamp=default_timestamp,
             default_tick=default_tick,
             tenant_id=effective_tenant_id,
+            signature_verifier=self._signature_verifier,
         )
         return events
 
@@ -207,7 +208,7 @@ class MemoryRuntime:
 def open_runtime(
     *,
     db_path: str | Path | None = None,
-    keyring: Mapping[str, bytes | str] | None = None,
+    keyring: Mapping[str, bytes | str | KeyMaterial] | None = None,
 ) -> MemoryRuntime:
     log: EventLog
     if db_path is None:

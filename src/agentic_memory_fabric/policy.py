@@ -68,6 +68,10 @@ def evaluate_retrieval_policy(state: MemoryState, policy_context: PolicyContext)
             denial_reason = "decay_expired_default_deny"
     if denial_reason is None and state.signature_state == "unsigned":
         denial_reason = "signature_missing_default_deny"
+    if denial_reason is None and state.signature_state == "key_missing":
+        denial_reason = "signature_key_missing_default_deny"
+    if denial_reason is None and state.signature_state == "revoked":
+        denial_reason = "signature_key_revoked_default_deny"
     if denial_reason is None and state.signature_state == "invalid":
         denial_reason = "signature_invalid_default_deny"
 

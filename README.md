@@ -33,7 +33,11 @@ In this causal memory fabric, events shape memory spacetime; time and integrity 
 ```python
 from agentic_memory_fabric.service import run_http_server
 
-server = run_http_server(host="127.0.0.1", port=8000)
+server = run_http_server(
+    host="127.0.0.1",
+    port=8000,
+    keyring={"dev-key": "super-secret"},
+)
 server.serve_forever()
 ```
 
@@ -49,10 +53,13 @@ Example endpoints:
 
 ```bash
 python -m agentic_memory_fabric.cli --state-file .amf-state.json import-records \
+  --tenant-id tenant-alpha \
   --records-json '[{"memory_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","payload":{"v":"x"},"source_id":"seed-1"}]' \
   --actor-json '{"id":"migration-bot","kind":"service"}' \
   --default-timestamp "2026-03-22T00:00:00Z"
 
 python -m agentic_memory_fabric.cli --state-file .amf-state.json query \
-  --policy-json '{"capabilities":["override_retrieval_denials"]}'
+  --tenant-id tenant-alpha \
+  --capabilities-json '["override_retrieval_denials"]' \
+  --keyring-json '{"dev-key":{"key":"super-secret","status":"active"}}'
 ```

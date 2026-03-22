@@ -11,9 +11,33 @@ if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
 from agentic_memory_fabric.cli import run_cli
+from agentic_memory_fabric.crypto import sign_event
+from agentic_memory_fabric.events import EventEnvelope
 
 
 class CliTests(unittest.TestCase):
+    def _signed_event_json(self) -> str:
+        event = EventEnvelope.from_dict(
+            {
+                "event_id": "99999999-9999-4999-8999-999999999999",
+                "sequence": 1,
+                "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 1},
+                "actor": {"id": "svc-memory", "kind": "service"},
+                "tenant_id": "tenant-alpha",
+                "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "event_type": "created",
+                "previous_events": [],
+                "payload_hash": "sha256:" + ("a" * 64),
+            }
+        )
+        event_dict = event.to_dict()
+        event_dict["signature"] = {
+            "alg": "hmac-sha256",
+            "key_id": "dev-key",
+            "sig": sign_event(event, key_id="dev-key", key=b"super-secret"),
+        }
+        return json.dumps(event_dict, sort_keys=True)
+
     def test_cli_contracts_and_deterministic_json_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             state_file = str(pathlib.Path(tmpdir) / "state.json")
@@ -148,3 +172,39 @@ class CliTests(unittest.TestCase):
             )
             provenance = json.loads(out_prov.getvalue())
             self.assertEqual(provenance["count"], 1)
+
+    def test_cli_signed_ingest_with_keyring_allows_default_query(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = str(pathlib.Path(tmpdir) / "state.json")
+            out_ingest = io.StringIO()
+            rc = run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    '{"dev-key":{"key":"super-secret","status":"active"}}',
+                    "ingest-event",
+                    "--event-json",
+                    self._signed_event_json(),
+                ],
+                stdout=out_ingest,
+            )
+            self.assertEqual(rc, 0)
+            out_query = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    '{"dev-key":{"key":"super-secret","status":"active"}}',
+                    "query",
+                ],
+                stdout=out_query,
+            )
+            payload = json.loads(out_query.getvalue())
+            self.assertEqual(payload["count"], 1)
+            self.assertEqual(payload["records"][0]["signature_state"], "verified")

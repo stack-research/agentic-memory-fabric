@@ -1,6 +1,9 @@
 """Agentic Memory Fabric control-plane package."""
 
 from .crypto import (
+    KEY_STATUS_ACTIVE,
+    KEY_STATUS_REVOKED,
+    KeyMaterial,
     SUPPORTED_SIGNATURE_ALGS,
     SignatureState,
     canonicalize_event_for_signing,
@@ -41,6 +44,9 @@ __all__ = [
     "EventTimestamp",
     "EvidenceRef",
     "FreshnessDecision",
+    "KeyMaterial",
+    "KEY_STATUS_ACTIVE",
+    "KEY_STATUS_REVOKED",
     "MemoryState",
     "PolicyContext",
     "PolicyDecision",

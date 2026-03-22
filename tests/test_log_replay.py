@@ -151,6 +151,38 @@ class LogReplayTests(unittest.TestCase):
                     state["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"].signature_state,
                     "invalid",
                 )
+                self.assertEqual(
+                    reopened.signature_states(),
+                    {
+                        "11111111-1111-4111-8111-111111111111": "verified",
+                        "22222222-2222-4222-8222-222222222222": "invalid",
+                    },
+                )
+            finally:
+                reopened.close()
+
+    def test_sqlite_log_persists_lifecycle_signature_states(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = pathlib.Path(tmpdir) / "events.db"
+            first = _event(1, "11111111-1111-4111-8111-111111111111", "created", [])
+            second = _event(
+                2,
+                "22222222-2222-4222-8222-222222222222",
+                "updated",
+                [first.event_id],
+            )
+            log = SQLiteEventLog(db_path)
+            try:
+                log.append(first, signature_verifier=lambda _: "key_missing")
+                log.append(second, signature_verifier=lambda _: "revoked")
+            finally:
+                log.close()
+
+            reopened = SQLiteEventLog(db_path)
+            try:
+                states = reopened.signature_states()
+                self.assertEqual(states[first.event_id], "key_missing")
+                self.assertEqual(states[second.event_id], "revoked")
             finally:
                 reopened.close()
 

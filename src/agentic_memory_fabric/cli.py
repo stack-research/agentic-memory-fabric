@@ -8,11 +8,32 @@ import sys
 from pathlib import Path
 from typing import Any, TextIO
 
+from .crypto import KEY_STATUS_ACTIVE, KeyMaterial
 from .runtime import MemoryRuntime, open_runtime
 
 
-def _load_state(path: Path) -> MemoryRuntime:
-    runtime = MemoryRuntime()
+def _decode_keyring(raw: str) -> dict[str, bytes | str | KeyMaterial]:
+    parsed = json.loads(raw)
+    if not isinstance(parsed, dict):
+        raise ValueError("--keyring-json must decode to a JSON object")
+    keyring: dict[str, bytes | str | KeyMaterial] = {}
+    for key_id, value in parsed.items():
+        if isinstance(value, (str, bytes)):
+            keyring[str(key_id)] = value
+            continue
+        if isinstance(value, dict):
+            key = value.get("key")
+            status = str(value.get("status", KEY_STATUS_ACTIVE))
+            if not isinstance(key, (str, bytes)):
+                raise ValueError(f"keyring entry {key_id!r} must include string or bytes key")
+            keyring[str(key_id)] = KeyMaterial(key=key, status=status)
+            continue
+        raise ValueError(f"unsupported keyring entry format for {key_id!r}")
+    return keyring
+
+
+def _load_state(path: Path, *, keyring: dict[str, bytes | str | KeyMaterial]) -> MemoryRuntime:
+    runtime = MemoryRuntime(keyring=dict(keyring))
     if not path.exists():
         return runtime
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -39,6 +60,7 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
     parser.add_argument("--role", default="runtime")
     parser.add_argument("--capabilities-json", default="[]")
     parser.add_argument("--allow-overrides", action="store_true")
+    parser.add_argument("--keyring-json", default="{}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_ingest = sub.add_parser("ingest-event")
@@ -69,12 +91,13 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
     args = parser.parse_args(argv)
     runtime: MemoryRuntime
     state_path: Path | None
+    keyring = _decode_keyring(args.keyring_json)
     if args.db:
-        runtime = open_runtime(db_path=args.db)
+        runtime = open_runtime(db_path=args.db, keyring=keyring)
         state_path = None
     else:
         state_path = Path(args.state_file)
-        runtime = _load_state(state_path)
+        runtime = _load_state(state_path, keyring=keyring)
     capabilities = _load_json_arg(args.capabilities_json)
     if not isinstance(capabilities, list):
         raise ValueError("--capabilities-json must decode to a JSON array")

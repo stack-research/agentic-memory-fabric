@@ -10,7 +10,6 @@ from .crypto import (
     sign_event,
     verify_event_signature,
 )
-from .cli import run_cli
 from .events import (
     Actor,
     Attestation,
@@ -32,6 +31,14 @@ from .retrieval import GetOutcome, QueryAuditSummary, RetrievalRecord, get, get_
 from .runtime import AuditSink, MemoryRuntime, open_runtime
 from .service import ServiceApp, run_http_server
 from .sqlite_store import SQLiteEventLog
+
+
+def run_cli(*args: object, **kwargs: object) -> int:
+    """Lazily import CLI to avoid runpy double-import warnings."""
+    from .cli import run_cli as _run_cli
+
+    return _run_cli(*args, **kwargs)
+
 
 __all__ = [
     "Actor",

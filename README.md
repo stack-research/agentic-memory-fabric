@@ -56,17 +56,28 @@ Example endpoints:
 ### CLI (JSON-first)
 
 ```bash
-python -m agentic_memory_fabric.cli --state-file .amf-state.json import-records \
+python3 -m agentic_memory_fabric.cli --state-file .amf-state.json import-records \
   --tenant-id tenant-alpha \
   --records-json '[{"memory_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","payload":{"v":"x"},"source_id":"seed-1"}]' \
   --actor-json '{"id":"migration-bot","kind":"service"}' \
   --default-timestamp "2026-03-22T00:00:00Z"
 
-python -m agentic_memory_fabric.cli --state-file .amf-state.json query \
+python3 -m agentic_memory_fabric.cli --state-file .amf-state.json query \
   --tenant-id tenant-alpha \
   --capabilities-json '["override_retrieval_denials"]' \
   --keyring-json '{"dev-key":{"key":"super-secret","status":"active"}}'
 ```
+
+### CLI walkthrough scripts
+
+For end-to-end, human-readable examples (with sectioned output and pretty-printed JSON), see:
+
+- `examples/README.md`
+- `examples/real-world-cli-import-audit.sh`
+- `examples/real-world-cli-signed-ingest.sh`
+- `examples/real-world-cli-trusted-text.sh`
+- `examples/real-world-cli-poisoning-attempt.sh`
+- `examples/real-world-cli-decay-half-life.sh`
 
 ## Audit Hooks
 
@@ -92,7 +103,7 @@ runtime = open_runtime(audit_sink=audit_events.append)
 CLI can write the same records as JSONL:
 
 ```bash
-python -m agentic_memory_fabric.cli --state-file .amf-state.json \
+python3 -m agentic_memory_fabric.cli --state-file .amf-state.json \
   --tenant-id tenant-alpha \
   --audit-jsonl .amf-audit.jsonl \
   query
@@ -133,7 +144,7 @@ HTTP query example:
 CLI query example:
 
 ```bash
-python -m agentic_memory_fabric.cli --state-file .amf-state.json \
+python3 -m agentic_memory_fabric.cli --state-file .amf-state.json \
   --tenant-id tenant-alpha \
   query \
   --policy-json '{"require_attestation": true, "min_attestation_trust_level": "medium", "allowed_attestation_issuers": ["issuer-alpha"]}'

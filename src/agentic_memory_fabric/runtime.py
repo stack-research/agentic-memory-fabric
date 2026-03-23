@@ -24,12 +24,14 @@ AuditSink = Callable[[Mapping[str, Any]], None]
 @dataclass
 class MemoryRuntime:
     log: EventLog = field(default_factory=AppendOnlyEventLog)
-    keyring: dict[str, bytes | str | KeyMaterial] = field(default_factory=dict)
+    keyring: dict[str, bytes | str | Mapping[str, Any] | KeyMaterial] = field(default_factory=dict)
     audit_sink: AuditSink | None = None
     _state_cache: dict[str, MemoryState] | None = field(default=None, init=False, repr=False)
     _events_cache: tuple[EventEnvelope, ...] | None = field(default=None, init=False, repr=False)
 
-    def _key_resolver(self, key_id: str) -> bytes | str | KeyMaterial | None:
+    def _key_resolver(
+        self, key_id: str
+    ) -> bytes | str | Mapping[str, Any] | KeyMaterial | None:
         return self.keyring.get(key_id)
 
     def _signature_verifier(self, event: EventEnvelope) -> str:
@@ -313,7 +315,7 @@ class MemoryRuntime:
 def open_runtime(
     *,
     db_path: str | Path | None = None,
-    keyring: Mapping[str, bytes | str | KeyMaterial] | None = None,
+    keyring: Mapping[str, bytes | str | Mapping[str, Any] | KeyMaterial] | None = None,
     audit_sink: AuditSink | None = None,
 ) -> MemoryRuntime:
     log: EventLog

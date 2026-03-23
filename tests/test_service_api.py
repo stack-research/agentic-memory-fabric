@@ -7,11 +7,14 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
+if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from agentic_memory_fabric.runtime import open_runtime
 from agentic_memory_fabric.service import ServiceApp, run_http_server
 from agentic_memory_fabric.crypto import KEY_STATUS_REVOKED, KeyMaterial, sign_event
 from agentic_memory_fabric.events import EventEnvelope
+from ed25519_utils import sign_event_ed25519
 
 TENANT_HEADER = {"x-tenant-id": "tenant-alpha"}
 AUTH_TOKENS = {
@@ -64,6 +67,25 @@ class ServiceApiTests(unittest.TestCase):
             "sig": sign_event(event, key_id=key_id, key=key),
         }
         return event_dict
+
+    def _ed25519_signed_event(self) -> tuple[dict, dict]:
+        event = EventEnvelope.from_dict(
+            {
+                "event_id": "aaaaaaaa-1111-4111-8111-111111111111",
+                "sequence": 1,
+                "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 1},
+                "actor": {"id": "svc-memory", "kind": "service"},
+                "tenant_id": "tenant-alpha",
+                "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "event_type": "created",
+                "previous_events": [],
+                "payload_hash": "sha256:" + ("a" * 64),
+            }
+        )
+        signature, jwk = sign_event_ed25519(event)
+        event_dict = event.to_dict()
+        event_dict["signature"] = {"alg": "ed25519", "key_id": "ed-key", "sig": signature}
+        return event_dict, jwk
 
     def test_import_endpoint_emits_imported_events_only(self) -> None:
         app = ServiceApp()
@@ -466,6 +488,27 @@ class ServiceApiTests(unittest.TestCase):
             payload_override["records"][0]["denial_reason"],
             "attestation_issuer_default_deny",
         )
+
+    def test_ed25519_signed_ingest_with_jwk_keyring_allows_query(self) -> None:
+        event_dict, jwk = self._ed25519_signed_event()
+        runtime = open_runtime(keyring={"ed-key": jwk})
+        app = ServiceApp(runtime=runtime)
+        status_ingest, _payload_ingest = app.handle_request(
+            "POST",
+            "/ingest/event",
+            json_bytes({"event": event_dict}),
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_ingest, 200)
+        status_query, payload_query = app.handle_request(
+            "POST",
+            "/query",
+            b"{}",
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_query, 200)
+        self.assertEqual(payload_query["count"], 1)
+        self.assertEqual(payload_query["records"][0]["signature_state"], "verified")
 
 
 def json_bytes(value: dict) -> bytes:

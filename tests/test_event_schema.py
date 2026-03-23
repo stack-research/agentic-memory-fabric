@@ -54,6 +54,7 @@ class EventSchemaTests(unittest.TestCase):
         )
         self.assertIn("signature", schema["properties"])
         self.assertIn("attestation", schema["properties"])
+        self.assertIn("ed25519", schema["properties"]["signature"]["properties"]["alg"]["enum"])
 
     def test_validate_event_envelope_accepts_valid_shape(self) -> None:
         validate_event_envelope(_valid_event())
@@ -80,7 +81,7 @@ class EventSchemaTests(unittest.TestCase):
     def test_validate_event_envelope_accepts_signature_and_attestation(self) -> None:
         event = _valid_event()
         event["signature"] = {
-            "alg": "hmac-sha256",
+            "alg": "ed25519",
             "key_id": "dev-key",
             "sig": "YWJjZA==",
         }

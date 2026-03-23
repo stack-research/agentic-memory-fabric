@@ -12,20 +12,39 @@ from .crypto import KEY_STATUS_ACTIVE, KeyMaterial
 from .runtime import AuditSink, MemoryRuntime, open_runtime
 
 
-def _decode_keyring(raw: str) -> dict[str, bytes | str | KeyMaterial]:
+def _decode_keyring(raw: str) -> dict[str, bytes | str | Mapping[str, Any] | KeyMaterial]:
     parsed = json.loads(raw)
     if not isinstance(parsed, dict):
         raise ValueError("--keyring-json must decode to a JSON object")
-    keyring: dict[str, bytes | str | KeyMaterial] = {}
+    keyring: dict[str, bytes | str | Mapping[str, Any] | KeyMaterial] = {}
     for key_id, value in parsed.items():
         if isinstance(value, (str, bytes)):
             keyring[str(key_id)] = value
             continue
         if isinstance(value, dict):
+            if value.get("kty") == "OKP" and value.get("crv") == "Ed25519":
+                status = str(value.get("status", KEY_STATUS_ACTIVE))
+                keyring[str(key_id)] = KeyMaterial(
+                    key={"kty": "OKP", "crv": "Ed25519", "x": value.get("x")},
+                    status=status,
+                )
+                continue
             key = value.get("key")
             status = str(value.get("status", KEY_STATUS_ACTIVE))
+            if isinstance(key, Mapping):
+                if key.get("kty") != "OKP" or key.get("crv") != "Ed25519":
+                    raise ValueError(
+                        f"keyring entry {key_id!r} key object must be Ed25519 JWK-like"
+                    )
+                keyring[str(key_id)] = KeyMaterial(
+                    key={"kty": "OKP", "crv": "Ed25519", "x": key.get("x")},
+                    status=status,
+                )
+                continue
             if not isinstance(key, (str, bytes)):
-                raise ValueError(f"keyring entry {key_id!r} must include string or bytes key")
+                raise ValueError(
+                    f"keyring entry {key_id!r} must include string/bytes key or Ed25519 key object"
+                )
             keyring[str(key_id)] = KeyMaterial(key=key, status=status)
             continue
         raise ValueError(f"unsupported keyring entry format for {key_id!r}")
@@ -35,7 +54,7 @@ def _decode_keyring(raw: str) -> dict[str, bytes | str | KeyMaterial]:
 def _load_state(
     path: Path,
     *,
-    keyring: dict[str, bytes | str | KeyMaterial],
+    keyring: dict[str, bytes | str | Mapping[str, Any] | KeyMaterial],
     audit_sink: AuditSink | None = None,
 ) -> MemoryRuntime:
     runtime = MemoryRuntime(keyring=dict(keyring))

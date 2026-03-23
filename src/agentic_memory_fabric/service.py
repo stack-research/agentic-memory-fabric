@@ -216,7 +216,7 @@ def run_http_server(
     port: int = 8000,
     runtime: MemoryRuntime | None = None,
     db_path: str | None = None,
-    keyring: Mapping[str, bytes | str | KeyMaterial] | None = None,
+    keyring: Mapping[str, bytes | str | Mapping[str, Any] | KeyMaterial] | None = None,
     audit_sink: Callable[[Mapping[str, Any]], None] | None = None,
 ) -> ThreadingHTTPServer:
     if runtime is not None and db_path is not None:

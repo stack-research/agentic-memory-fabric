@@ -89,6 +89,22 @@ python -m agentic_memory_fabric.cli --state-file .amf-state.json \
   query
 ```
 
+## Ed25519/JWKS Keyring Example
+
+Asymmetric verification is supported with `signature.alg = "ed25519"` and JWK-like public keys:
+
+```json
+{
+  "ed-key": {
+    "kty": "OKP",
+    "crv": "Ed25519",
+    "x": "11qYAYLef2u4L6vR7M1gk9YbS1VZp6Qj4Lx1p9bQx8w"
+  }
+}
+```
+
+You can pass this through CLI `--keyring-json` or `open_runtime(keyring=...)`.
+
 ## Opt-In Attestation Gates
 
 Attestation checks are opt-in through `policy_context`; default retrieval behavior is unchanged.

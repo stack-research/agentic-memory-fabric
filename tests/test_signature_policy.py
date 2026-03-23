@@ -6,6 +6,8 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
+if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from agentic_memory_fabric.crypto import KEY_STATUS_REVOKED, KeyMaterial, sign_event, verify_event_signature
 from agentic_memory_fabric.events import EventEnvelope
@@ -13,6 +15,7 @@ from agentic_memory_fabric.log import AppendOnlyEventLog
 from agentic_memory_fabric.policy import OVERRIDE_CAPABILITY, PolicyContext
 from agentic_memory_fabric.replay import replay_events
 from agentic_memory_fabric.retrieval import get
+from ed25519_utils import sign_event_ed25519
 
 
 def _base_event_dict() -> dict:
@@ -137,3 +140,59 @@ class SignaturePolicyTests(unittest.TestCase):
             key_resolver=lambda _key_id: KeyMaterial(key=b"super-secret", status=KEY_STATUS_REVOKED),
         )
         self.assertEqual(revoked_state, "revoked")
+
+    def test_ed25519_verified_signature_allows_retrieval(self) -> None:
+        event = EventEnvelope.from_dict(_base_event_dict())
+        signature, jwk = sign_event_ed25519(event)
+        signed_dict = event.to_dict()
+        signed_dict["signature"] = {"alg": "ed25519", "key_id": "ed-key", "sig": signature}
+        signed_event = EventEnvelope.from_dict(signed_dict)
+        log = AppendOnlyEventLog()
+        log.append(
+            signed_event,
+            signature_verifier=lambda evt: verify_event_signature(
+                evt, key_resolver=lambda key_id: jwk if key_id == "ed-key" else None
+            ),
+        )
+        state_map = replay_events(log.all_events(), signature_states=log.signature_states())
+        record = get(
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            state_map,
+            PolicyContext(tenant_id="tenant-alpha"),
+        )
+        self.assertIsNotNone(record)
+        assert record is not None
+        self.assertEqual(record.signature_state, "verified")
+
+    def test_ed25519_tampered_event_is_invalid(self) -> None:
+        event = EventEnvelope.from_dict(_base_event_dict())
+        signature, jwk = sign_event_ed25519(event)
+        signed_dict = event.to_dict()
+        signed_dict["signature"] = {"alg": "ed25519", "key_id": "ed-key", "sig": signature}
+        signed_dict["payload_hash"] = "sha256:" + ("b" * 64)
+        tampered_event = EventEnvelope.from_dict(signed_dict)
+        self.assertEqual(
+            verify_event_signature(
+                tampered_event,
+                key_resolver=lambda key_id: jwk if key_id == "ed-key" else None,
+            ),
+            "invalid",
+        )
+
+    def test_ed25519_missing_and_revoked_keys(self) -> None:
+        event = EventEnvelope.from_dict(_base_event_dict())
+        signature, jwk = sign_event_ed25519(event)
+        signed_dict = event.to_dict()
+        signed_dict["signature"] = {"alg": "ed25519", "key_id": "ed-key", "sig": signature}
+        signed_event = EventEnvelope.from_dict(signed_dict)
+        self.assertEqual(
+            verify_event_signature(signed_event, key_resolver=lambda _key_id: None),
+            "key_missing",
+        )
+        self.assertEqual(
+            verify_event_signature(
+                signed_event,
+                key_resolver=lambda _key_id: KeyMaterial(key=jwk, status=KEY_STATUS_REVOKED),
+            ),
+            "revoked",
+        )

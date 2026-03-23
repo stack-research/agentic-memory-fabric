@@ -9,10 +9,13 @@ PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
+if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 
 from agentic_memory_fabric.cli import run_cli
 from agentic_memory_fabric.crypto import sign_event
 from agentic_memory_fabric.events import EventEnvelope
+from ed25519_utils import sign_event_ed25519
 
 
 class CliTests(unittest.TestCase):
@@ -51,6 +54,26 @@ class CliTests(unittest.TestCase):
             "sig": sign_event(event, key_id="dev-key", key=b"super-secret"),
         }
         return json.dumps(event_dict, sort_keys=True)
+
+    def _ed25519_signed_event_json(self) -> tuple[str, str]:
+        event = EventEnvelope.from_dict(
+            {
+                "event_id": "aaaaaaaa-1111-4111-8111-111111111111",
+                "sequence": 1,
+                "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 1},
+                "actor": {"id": "svc-memory", "kind": "service"},
+                "tenant_id": "tenant-alpha",
+                "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "event_type": "created",
+                "previous_events": [],
+                "payload_hash": "sha256:" + ("a" * 64),
+            }
+        )
+        signature, jwk = sign_event_ed25519(event)
+        event_dict = event.to_dict()
+        event_dict["signature"] = {"alg": "ed25519", "key_id": "ed-key", "sig": signature}
+        keyring_json = json.dumps({"ed-key": jwk}, sort_keys=True)
+        return json.dumps(event_dict, sort_keys=True), keyring_json
 
     def test_cli_contracts_and_deterministic_json_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -470,3 +493,38 @@ class CliTests(unittest.TestCase):
                 override_payload["records"][0]["denial_reason"],
                 "attestation_issuer_default_deny",
             )
+
+    def test_cli_ed25519_signed_ingest_with_jwk_keyring(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = str(pathlib.Path(tmpdir) / "state.json")
+            event_json, keyring_json = self._ed25519_signed_event_json()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "ingest-event",
+                    "--event-json",
+                    event_json,
+                ],
+                stdout=io.StringIO(),
+            )
+            out_query = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "query",
+                ],
+                stdout=out_query,
+            )
+            payload = json.loads(out_query.getvalue())
+            self.assertEqual(payload["count"], 1)
+            self.assertEqual(payload["records"][0]["signature_state"], "verified")

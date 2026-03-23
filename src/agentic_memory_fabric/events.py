@@ -27,7 +27,7 @@ VALID_ACTOR_KINDS = frozenset({"user", "service", "tool"})
 VALID_EVIDENCE_TYPES = frozenset(
     {"url", "message_id", "file_path", "tool_run_id", "opaque"}
 )
-VALID_SIGNATURE_ALGS = frozenset({"hmac-sha256"})
+VALID_SIGNATURE_ALGS = frozenset({"hmac-sha256", "ed25519"})
 VALID_ATTESTATION_TRUST_LEVELS = frozenset({"low", "medium", "high"})
 
 

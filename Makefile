@@ -5,7 +5,7 @@ PYTHON ?= python3
 SRC_DIR := src
 TESTS_DIR := tests
 
-.PHONY: help test lint format clean check
+.PHONY: help test lint format clean clean-demo check
 
 help:
 	@echo "Targets:"
@@ -13,6 +13,7 @@ help:
 	@echo "  make lint    - syntax check (compileall) + ruff check if available (pip install ruff)"
 	@echo "  make format  - ruff format src and tests (requires: pip install ruff)"
 	@echo "  make clean   - remove __pycache__ and *.pyc"
+	@echo "  make clean-demo - remove generated .amf-*.db demo databases"
 	@echo "  make check   - lint then test"
 
 test:
@@ -33,5 +34,8 @@ format:
 clean:
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +
 	find . -type f -name '*.py[co]' -delete
+
+clean-demo:
+	find . -maxdepth 1 -type f -name '.amf-*.db' -delete
 
 check: lint test

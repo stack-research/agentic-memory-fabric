@@ -115,7 +115,9 @@ def evaluate_retrieval_policy(state: MemoryState, policy_context: PolicyContext)
         return PolicyDecision(allowed=True, why_sound="trusted_active_under_policy")
 
     if denial_reason in NON_OVERRIDABLE_DENIALS:
-        return PolicyDecision(allowed=False, why_sound="policy_denied", denial_reason=denial_reason)
+        return PolicyDecision(
+            allowed=False, why_sound="policy_denied", denial_reason=denial_reason
+        )
 
     if policy_context.can_override():
         return PolicyDecision(
@@ -124,5 +126,6 @@ def evaluate_retrieval_policy(state: MemoryState, policy_context: PolicyContext)
             denial_reason=denial_reason,
             override_used=True,
         )
-
-    return PolicyDecision(allowed=False, why_sound="policy_denied", denial_reason=denial_reason)
+    return PolicyDecision(
+        allowed=False, why_sound="policy_denied", denial_reason=denial_reason
+    )

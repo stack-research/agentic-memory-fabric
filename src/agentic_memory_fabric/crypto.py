@@ -50,10 +50,10 @@ def _to_key_bytes(key: bytes | str) -> bytes:
 
 def _decode_base64_any(value: str) -> bytes:
     padded = value + ("=" * (-len(value) % 4))
-    try:
-        return base64.b64decode(padded.encode("ascii"))
-    except Exception:
-        return base64.urlsafe_b64decode(padded.encode("ascii"))
+    # Use a single decoder that supports both standard base64 and base64url
+    # (where '+'/' are replaced by '-'/'_'). This avoids intermittent decode
+    # failures depending on the alphabet used in the input string.
+    return base64.b64decode(padded.encode("ascii"), altchars=b"-_")
 
 
 def _ed25519_public_key_bytes_from_material(material: bytes | str | Mapping[str, Any]) -> bytes | None:
@@ -93,11 +93,9 @@ def _verify_ed25519_signature(
     # RFC 8410 SubjectPublicKeyInfo prefix for Ed25519 public keys.
     spki_prefix = bytes.fromhex("302a300506032b6570032100")
     pub_der = spki_prefix + public_key_bytes
-    pub_pem = (
-        "-----BEGIN PUBLIC KEY-----\n"
-        + base64.encodebytes(pub_der).decode("ascii").replace("\n", "")
-        + "\n-----END PUBLIC KEY-----\n"
-    )
+    # Keep PEM line breaks intact; some OpenSSL builds are stricter than others.
+    pub_b64 = base64.encodebytes(pub_der).decode("ascii")
+    pub_pem = "-----BEGIN PUBLIC KEY-----\n" + pub_b64 + "-----END PUBLIC KEY-----\n"
     with tempfile.TemporaryDirectory() as tmpdir:
         msg_path = f"{tmpdir}/msg.bin"
         sig_path = f"{tmpdir}/sig.bin"

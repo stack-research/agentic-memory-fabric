@@ -31,11 +31,24 @@ format:
 	@$(PYTHON) -m ruff --version >/dev/null 2>&1 || (echo "install ruff: pip install ruff" && exit 1)
 	$(PYTHON) -m ruff format $(SRC_DIR) $(TESTS_DIR)
 
-clean:
+clean-databases:
+	find . -maxdepth 1 -type f -name '.amf-*.db' -delete
+
+clean-python:
 	find . -type d -name __pycache__ -prune -exec rm -rf {} +
 	find . -type f -name '*.py[co]' -delete
+	find . -type d -name .pytest_cache -prune -exec rm -rf {} +
+	find . -type d -name .mypy_cache -prune -exec rm -rf {} +
+	find . -type d -name .ruff_cache -prune -exec rm -rf {} +
+	find . -type d -name .coverage -prune -exec rm -rf {} +
+	find . -type d -name .coverage.* -prune -exec rm -rf {} +
+	find . -type d -name .coverage.xml -prune -exec rm -rf {} +
+	find . -type d -name .coverage.xml.gz -prune -exec rm -rf {} +
+	find . -type d -name .coverage.xml.gz.base64 -prune -exec rm -rf {} +
 
-clean-demo:
-	find . -maxdepth 1 -type f -name '.amf-*.db' -delete
+clean: clean-databases clean-python
+
+# Convenience alias for removing the SQLite demo databases created by examples/.
+clean-demo: clean-databases
 
 check: lint test

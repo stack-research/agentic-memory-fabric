@@ -284,7 +284,15 @@ class MemoryRuntime:
         trusted_context: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
         ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
-        return export_sbom_snapshot(self.state_map(), ctx)
+        snapshot = export_sbom_snapshot(self.state_map(), ctx)
+        self._emit_audit(
+            {
+                "type": "memory.export.snapshot",
+                "tenant_id": ctx.tenant_id,
+                "record_count": int(snapshot.get("count", 0)),
+            }
+        )
+        return snapshot
 
     def export_provenance(
         self,
@@ -296,13 +304,26 @@ class MemoryRuntime:
     ) -> dict[str, Any]:
         ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
         if ctx.tenant_id is None and not ctx.can_override():
-            return {
+            denied = {
                 "artifact_type": "provenance_log_slice",
                 "count": 0,
                 "events": [],
                 "denial_reason": "tenant_scope_required_default_deny",
             }
+            self._emit_audit(
+                {
+                    "type": "memory.export.provenance",
+                    "tenant_id": ctx.tenant_id,
+                    "memory_id": memory_id,
+                    "sequence_range": sequence_range,
+                    "event_count": 0,
+                    "denial_reason": denied["denial_reason"],
+                    "load_strategy": "denied",
+                }
+            )
+            return denied
         events: tuple[EventEnvelope, ...]
+        load_strategy = "full"
         if memory_id is not None and hasattr(self.log, "events_for_memory"):
             if sequence_range is not None:
                 start, end = sequence_range
@@ -312,19 +333,35 @@ class MemoryRuntime:
                     start=start,
                     end=end,
                 )
+                load_strategy = "memory_scoped"
             else:
                 events = self.log.events_for_memory(memory_id, ctx.tenant_id)
+                load_strategy = "memory_scoped"
         elif sequence_range is not None and hasattr(self.log, "events_in_sequence_range"):
             start, end = sequence_range
             events = self.log.events_in_sequence_range(start=start, end=end)
+            load_strategy = "sequence_range"
         else:
             events = self._load_all_events_cached()
-        return export_provenance_log(
+            load_strategy = "full"
+        provenance = export_provenance_log(
             events,
             sequence_range=sequence_range,
             memory_id=memory_id,
             tenant_id=ctx.tenant_id,
         )
+        self._emit_audit(
+            {
+                "type": "memory.export.provenance",
+                "tenant_id": ctx.tenant_id,
+                "memory_id": memory_id,
+                "sequence_range": sequence_range,
+                "event_count": int(provenance.get("count", 0)),
+                "denial_reason": provenance.get("denial_reason"),
+                "load_strategy": load_strategy,
+            }
+        )
+        return provenance
 
 
 def open_runtime(

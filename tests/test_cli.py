@@ -362,9 +362,35 @@ class CliTests(unittest.TestCase):
                 ],
                 stdout=io.StringIO(),
             )
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--audit-jsonl",
+                    str(audit_file),
+                    "export-snapshot",
+                ],
+                stdout=io.StringIO(),
+            )
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--audit-jsonl",
+                    str(audit_file),
+                    "export-provenance",
+                ],
+                stdout=io.StringIO(),
+            )
             lines = [line for line in audit_file.read_text(encoding="utf-8").splitlines() if line.strip()]
             parsed = [json.loads(line) for line in lines]
             self.assertTrue(any(event.get("type") == "memory.query" for event in parsed))
+            self.assertTrue(any(event.get("type") == "memory.export.snapshot" for event in parsed))
+            self.assertTrue(any(event.get("type") == "memory.export.provenance" for event in parsed))
 
     def test_cli_query_policy_context_attestation_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

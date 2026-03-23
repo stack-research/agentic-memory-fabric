@@ -71,7 +71,12 @@ python -m agentic_memory_fabric.cli --state-file .amf-state.json query \
 ## Audit Hooks
 
 Runtime operations can emit structured audit records through an optional sink callback.
-Current event types include `memory.query`, `memory.get`, and `memory.explain`.
+Current event types include:
+- `memory.query`
+- `memory.get`
+- `memory.explain`
+- `memory.export.snapshot`
+- `memory.export.provenance`
 
 ```python
 from agentic_memory_fabric.runtime import open_runtime
@@ -79,7 +84,7 @@ from agentic_memory_fabric.runtime import open_runtime
 audit_events = []
 runtime = open_runtime(audit_sink=audit_events.append)
 
-# run query/get/explain...
+# run query/get/explain/export...
 # audit_events now contains deterministic dictionaries, for example:
 # {"type":"memory.query","tenant_id":"tenant-alpha","allowed":1,"denied_by_reason":{}}
 ```

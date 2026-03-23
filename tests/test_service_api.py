@@ -404,6 +404,73 @@ class ServiceApiTests(unittest.TestCase):
         self.assertEqual(len(http_query_events), 1)
         self.assertEqual(http_query_events[0]["http_status"], 200)
 
+    def test_export_endpoints_emit_runtime_and_http_audit_records(self) -> None:
+        runtime_events: list[dict] = []
+        http_events: list[dict] = []
+        runtime = open_runtime(audit_sink=runtime_events.append)
+        app = ServiceApp(runtime=runtime, audit_sink=http_events.append)
+        app.handle_request(
+            "POST",
+            "/ingest/import",
+            (
+                b'{"records":[{"memory_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",'
+                b'"payload":{"v":"x"},"source_id":"seed-1"}],'
+                b'"actor":{"id":"migration-bot","kind":"service"},'
+                b'"default_timestamp":"2026-03-22T00:00:00Z"}'
+            ),
+            headers=TENANT_HEADER,
+        )
+
+        status_snapshot, payload_snapshot = app.handle_request(
+            "POST",
+            "/export/snapshot",
+            b"{}",
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_snapshot, 200)
+        self.assertEqual(payload_snapshot["artifact_type"], "memory_sbom_snapshot")
+
+        status_prov_ok, payload_prov_ok = app.handle_request(
+            "POST",
+            "/export/provenance",
+            b'{"memory_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"}',
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_prov_ok, 200)
+        self.assertEqual(payload_prov_ok["artifact_type"], "provenance_log_slice")
+
+        status_prov_denied, payload_prov_denied = app.handle_request(
+            "POST",
+            "/export/provenance",
+            b"{}",
+            headers=None,
+        )
+        self.assertEqual(status_prov_denied, 200)
+        self.assertEqual(payload_prov_denied["denial_reason"], "tenant_scope_required_default_deny")
+
+        snapshot_events = [
+            event for event in runtime_events if event.get("type") == "memory.export.snapshot"
+        ]
+        self.assertEqual(len(snapshot_events), 1)
+        self.assertEqual(snapshot_events[0]["tenant_id"], "tenant-alpha")
+        self.assertEqual(snapshot_events[0]["record_count"], payload_snapshot["count"])
+
+        provenance_events = [
+            event for event in runtime_events if event.get("type") == "memory.export.provenance"
+        ]
+        self.assertEqual(len(provenance_events), 2)
+        self.assertTrue(any(event.get("load_strategy") == "memory_scoped" for event in provenance_events))
+        self.assertTrue(any(event.get("load_strategy") == "denied" for event in provenance_events))
+
+        http_export_events = [
+            event
+            for event in http_events
+            if event.get("type") == "http.request"
+            and event.get("http_route") in {"/export/snapshot", "/export/provenance"}
+        ]
+        self.assertEqual(len(http_export_events), 3)
+        self.assertTrue(all(event.get("http_status") == 200 for event in http_export_events))
+
     def test_query_policy_context_attestation_gates_are_enforced(self) -> None:
         runtime = open_runtime(keyring={"dev-key": b"super-secret"})
         app = ServiceApp(runtime=runtime, auth_tokens=AUTH_TOKENS)

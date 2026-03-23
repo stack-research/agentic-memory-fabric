@@ -18,6 +18,10 @@ In this causal memory fabric, events shape memory spacetime; time and integrity 
 - Not snapshot theater that omits supersession, expiration, quarantine, or deletion history.
 - Not silent trusted writes during import or migration.
 
+## SQLite lineage indexing
+
+When using a SQLite-backed store (`open_runtime(db_path=...)`), `memory_id` and `tenant_id` are stored as indexed columns on each row. **`explain`** and **`export_provenance`** with a `memory_id` filter load only matching events (ordered by sequence) instead of scanning the full log. Replay and `state_map` still read the complete append-only history.
+
 ## Immediate MVP Outcomes
 
 - Stable event envelope and append-only log primitives.

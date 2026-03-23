@@ -260,7 +260,11 @@ class MemoryRuntime:
                 }
             )
             return []
-        trace = explain(memory_id, self._load_all_events_cached(), tenant_id=ctx.tenant_id)
+        if hasattr(self.log, "events_for_memory"):
+            explain_events = self.log.events_for_memory(memory_id, ctx.tenant_id)
+        else:
+            explain_events = self._load_all_events_cached()
+        trace = explain(memory_id, explain_events, tenant_id=ctx.tenant_id)
         self._emit_audit(
             {
                 "type": "memory.explain",
@@ -299,7 +303,18 @@ class MemoryRuntime:
                 "denial_reason": "tenant_scope_required_default_deny",
             }
         events: tuple[EventEnvelope, ...]
-        if sequence_range is not None and hasattr(self.log, "events_in_sequence_range"):
+        if memory_id is not None and hasattr(self.log, "events_for_memory"):
+            if sequence_range is not None:
+                start, end = sequence_range
+                events = self.log.events_for_memory_in_sequence_range(
+                    memory_id,
+                    ctx.tenant_id,
+                    start=start,
+                    end=end,
+                )
+            else:
+                events = self.log.events_for_memory(memory_id, ctx.tenant_id)
+        elif sequence_range is not None and hasattr(self.log, "events_in_sequence_range"):
             start, end = sequence_range
             events = self.log.events_in_sequence_range(start=start, end=end)
         else:

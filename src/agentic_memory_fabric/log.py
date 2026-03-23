@@ -64,3 +64,38 @@ class AppendOnlyEventLog:
 
     def signature_state_for_event(self, event_id: str) -> str | None:
         return self._signature_states.get(event_id)
+
+    def events_for_memory(
+        self,
+        memory_id: str,
+        tenant_id: str | None,
+    ) -> tuple[EventEnvelope, ...]:
+        out: list[EventEnvelope] = []
+        for event in self._events:
+            if event.memory_id != memory_id:
+                continue
+            if tenant_id is not None and event.tenant_id != tenant_id:
+                continue
+            out.append(event)
+        return tuple(out)
+
+    def events_for_memory_in_sequence_range(
+        self,
+        memory_id: str,
+        tenant_id: str | None,
+        *,
+        start: int,
+        end: int,
+    ) -> tuple[EventEnvelope, ...]:
+        if start < 1 or end < start:
+            raise ValueError("sequence range must be (start>=1, end>=start)")
+        out: list[EventEnvelope] = []
+        for event in self._events:
+            if event.memory_id != memory_id:
+                continue
+            if tenant_id is not None and event.tenant_id != tenant_id:
+                continue
+            if event.sequence < start or event.sequence > end:
+                continue
+            out.append(event)
+        return tuple(out)

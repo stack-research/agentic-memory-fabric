@@ -10,6 +10,11 @@ from .events import EventEnvelope
 from .log import SignatureVerifier
 
 
+def _table_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {str(row[1]) for row in rows}
+
+
 class SQLiteEventLog:
     def __init__(self, db_path: str | Path) -> None:
         self._db_path = str(db_path)
@@ -29,7 +34,28 @@ class SQLiteEventLog:
             )
             """
         )
+        self._migrate_lineage_columns()
         self._conn.commit()
+
+    def _migrate_lineage_columns(self) -> None:
+        names = _table_column_names(self._conn, "events")
+        if "memory_id" not in names:
+            self._conn.execute("ALTER TABLE events ADD COLUMN memory_id TEXT")
+            self._conn.execute("ALTER TABLE events ADD COLUMN tenant_id TEXT")
+            self._conn.execute(
+                """
+                UPDATE events SET
+                    memory_id = json_extract(event_json, '$.memory_id'),
+                    tenant_id = json_extract(event_json, '$.tenant_id')
+                WHERE memory_id IS NULL OR tenant_id IS NULL
+                """
+            )
+        self._conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_events_tenant_memory_seq
+            ON events(tenant_id, memory_id, sequence)
+            """
+        )
 
     def append(
         self,
@@ -55,12 +81,18 @@ class SQLiteEventLog:
             signature_state = "unsigned" if event.signature is None else "invalid"
 
         self._conn.execute(
-            "INSERT INTO events (sequence, event_id, event_json, signature_state) VALUES (?, ?, ?, ?)",
+            """
+            INSERT INTO events (
+                sequence, event_id, event_json, signature_state, memory_id, tenant_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
             (
                 event.sequence,
                 event.event_id,
                 json.dumps(event.to_dict(), sort_keys=True),
                 signature_state,
+                event.memory_id,
+                event.tenant_id,
             ),
         )
         self._conn.commit()
@@ -96,6 +128,65 @@ class SQLiteEventLog:
         ).fetchall()
         return tuple(EventEnvelope.from_dict(json.loads(row[0])) for row in rows)
 
+    def events_for_memory(
+        self,
+        memory_id: str,
+        tenant_id: str | None,
+    ) -> tuple[EventEnvelope, ...]:
+        if tenant_id is not None:
+            rows = self._conn.execute(
+                """
+                SELECT event_json
+                FROM events
+                WHERE memory_id = ? AND tenant_id = ?
+                ORDER BY sequence ASC
+                """,
+                (memory_id, tenant_id),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """
+                SELECT event_json
+                FROM events
+                WHERE memory_id = ?
+                ORDER BY sequence ASC
+                """,
+                (memory_id,),
+            ).fetchall()
+        return tuple(EventEnvelope.from_dict(json.loads(row[0])) for row in rows)
+
+    def events_for_memory_in_sequence_range(
+        self,
+        memory_id: str,
+        tenant_id: str | None,
+        *,
+        start: int,
+        end: int,
+    ) -> tuple[EventEnvelope, ...]:
+        if start < 1 or end < start:
+            raise ValueError("sequence range must be (start>=1, end>=start)")
+        if tenant_id is not None:
+            rows = self._conn.execute(
+                """
+                SELECT event_json
+                FROM events
+                WHERE memory_id = ? AND tenant_id = ? AND sequence BETWEEN ? AND ?
+                ORDER BY sequence ASC
+                """,
+                (memory_id, tenant_id, start, end),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                """
+                SELECT event_json
+                FROM events
+                WHERE memory_id = ? AND sequence BETWEEN ? AND ?
+                ORDER BY sequence ASC
+                """,
+                (memory_id, start, end),
+            ).fetchall()
+        return tuple(EventEnvelope.from_dict(json.loads(row[0])) for row in rows)
+
     def __len__(self) -> int:
         row = self._conn.execute("SELECT COUNT(*) FROM events").fetchone()
         return int(row[0]) if row is not None else 0
@@ -115,4 +206,3 @@ class SQLiteEventLog:
 
     def close(self) -> None:
         self._conn.close()
-

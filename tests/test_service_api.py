@@ -208,27 +208,33 @@ class ServiceApiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = pathlib.Path(tmpdir) / "events.db"
             app_one = ServiceApp(runtime=open_runtime(db_path=db_path))
-            app_one.handle_request(
-                "POST",
-                "/ingest/import",
-                (
-                    b'{"records":[{"memory_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",'
-                    b'"payload":{"v":"x"},"source_id":"seed-1"}],'
-                    b'"actor":{"id":"migration-bot","kind":"service"},'
-                    b'"default_timestamp":"2026-03-22T00:00:00Z"}'
-                ),
-                headers=TENANT_HEADER,
-            )
+            app_two = None
+            try:
+                app_one.handle_request(
+                    "POST",
+                    "/ingest/import",
+                    (
+                        b'{"records":[{"memory_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",'
+                        b'"payload":{"v":"x"},"source_id":"seed-1"}],'
+                        b'"actor":{"id":"migration-bot","kind":"service"},'
+                        b'"default_timestamp":"2026-03-22T00:00:00Z"}'
+                    ),
+                    headers=TENANT_HEADER,
+                )
 
-            app_two = ServiceApp(runtime=open_runtime(db_path=db_path), auth_tokens=AUTH_TOKENS)
-            status, payload = app_two.handle_request(
-                "POST",
-                "/query",
-                b'{"policy_context":{"capabilities":["override_retrieval_denials"]}}',
-                headers={"x-tenant-id": "tenant-alpha", "x-auth-token": "token-auditor"},
-            )
-            self.assertEqual(status, 200)
-            self.assertEqual(payload["count"], 1)
+                app_two = ServiceApp(runtime=open_runtime(db_path=db_path), auth_tokens=AUTH_TOKENS)
+                status, payload = app_two.handle_request(
+                    "POST",
+                    "/query",
+                    b'{"policy_context":{"capabilities":["override_retrieval_denials"]}}',
+                    headers={"x-tenant-id": "tenant-alpha", "x-auth-token": "token-auditor"},
+                )
+                self.assertEqual(status, 200)
+                self.assertEqual(payload["count"], 1)
+            finally:
+                if app_two is not None:
+                    app_two.close()
+                app_one.close()
 
     def test_ingest_rejects_tenant_mismatch_with_trusted_auth(self) -> None:
         app = ServiceApp(auth_tokens=AUTH_TOKENS)

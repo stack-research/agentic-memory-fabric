@@ -21,7 +21,6 @@ from agentic_memory_fabric.log import AppendOnlyEventLog
 from agentic_memory_fabric.runtime import open_runtime
 from agentic_memory_fabric.sqlite_store import SQLiteEventLog
 
-
 MEM_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
 MEM_B = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 TENANT = "tenant-alpha"
@@ -86,19 +85,21 @@ class LineageIndexTests(unittest.TestCase):
             log = SQLiteEventLog(db_path)
             try:
                 self.assertEqual(len(log), 1)
-                row = sqlite3.connect(db_path).execute(
-                    "SELECT memory_id, tenant_id FROM events WHERE sequence = 1"
-                ).fetchone()
+                with sqlite3.connect(db_path) as conn:
+                    row = conn.execute(
+                        "SELECT memory_id, tenant_id FROM events WHERE sequence = 1"
+                    ).fetchone()
                 self.assertIsNotNone(row)
                 assert row is not None
                 self.assertEqual(row[0], MEM_A)
                 self.assertEqual(row[1], TENANT)
-                idx = sqlite3.connect(db_path).execute(
-                    """
-                    SELECT name FROM sqlite_master
-                    WHERE type='index' AND name='idx_events_tenant_memory_seq'
-                    """
-                ).fetchone()
+                with sqlite3.connect(db_path) as conn:
+                    idx = conn.execute(
+                        """
+                        SELECT name FROM sqlite_master
+                        WHERE type='index' AND name='idx_events_tenant_memory_seq'
+                        """
+                    ).fetchone()
                 self.assertIsNotNone(idx)
             finally:
                 log.close()

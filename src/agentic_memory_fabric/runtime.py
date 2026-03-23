@@ -363,6 +363,11 @@ class MemoryRuntime:
         )
         return provenance
 
+    def close(self) -> None:
+        close_fn = getattr(self.log, "close", None)
+        if callable(close_fn):
+            close_fn()
+
 
 def open_runtime(
     *,

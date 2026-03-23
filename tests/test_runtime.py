@@ -172,26 +172,32 @@ class RuntimeReadModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = pathlib.Path(tmpdir) / "events.db"
             runtime = open_runtime(db_path=db_path)
-            runtime.ingest_event(
-                _event(
-                    sequence=1,
-                    event_id="11111111-1111-4111-8111-111111111111",
-                    event_type="created",
-                    previous_events=[],
+            reopened = None
+            try:
+                runtime.ingest_event(
+                    _event(
+                        sequence=1,
+                        event_id="11111111-1111-4111-8111-111111111111",
+                        event_type="created",
+                        previous_events=[],
+                    )
                 )
-            )
-            runtime.ingest_event(
-                _event(
-                    sequence=2,
-                    event_id="22222222-2222-4222-8222-222222222222",
-                    event_type="updated",
-                    previous_events=["11111111-1111-4111-8111-111111111111"],
+                runtime.ingest_event(
+                    _event(
+                        sequence=2,
+                        event_id="22222222-2222-4222-8222-222222222222",
+                        event_type="updated",
+                        previous_events=["11111111-1111-4111-8111-111111111111"],
+                    )
                 )
-            )
 
-            reopened = open_runtime(db_path=db_path)
-            oracle = replay_events(
-                reopened.log.all_events(),
-                signature_states=reopened.log.signature_states(),
-            )
-            self.assertEqual(reopened.state_map(), oracle)
+                reopened = open_runtime(db_path=db_path)
+                oracle = replay_events(
+                    reopened.log.all_events(),
+                    signature_states=reopened.log.signature_states(),
+                )
+                self.assertEqual(reopened.state_map(), oracle)
+            finally:
+                runtime.close()
+                if reopened is not None:
+                    reopened.close()

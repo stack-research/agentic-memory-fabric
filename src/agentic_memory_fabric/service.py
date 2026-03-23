@@ -23,6 +23,11 @@ class ServiceApp:
     auth_tokens: dict[str, dict[str, Any]] = field(default_factory=dict)
     audit_sink: Callable[[Mapping[str, Any]], None] | None = None
 
+    def close(self) -> None:
+        close_fn = getattr(self.runtime, "close", None)
+        if callable(close_fn):
+            close_fn()
+
     def _emit_audit(self, event: dict[str, Any]) -> None:
         if self.audit_sink is None:
             return

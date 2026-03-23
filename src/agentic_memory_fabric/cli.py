@@ -147,90 +147,96 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
         "allow_overrides": args.allow_overrides,
     }
 
-    if args.command == "ingest-event":
-        event = runtime.ingest_event(
-            _load_json_arg(args.event_json),
-            expected_tenant_id=args.tenant_id,
-            trusted_context=trusted_context,
-        )
-        if state_path is not None:
-            _save_state(state_path, runtime)
-        out.write(json.dumps({"event": event.to_dict()}, sort_keys=True) + "\n")
-        return 0
-
-    if args.command == "import-records":
-        events = runtime.import_records(
-            _load_json_arg(args.records_json),
-            actor=_load_json_arg(args.actor_json),
-            default_timestamp=args.default_timestamp,
-            start_sequence=args.start_sequence,
-            tenant_id=args.tenant_id,
-            expected_tenant_id=args.tenant_id,
-            trusted_context=trusted_context,
-        )
-        if state_path is not None:
-            _save_state(state_path, runtime)
-        out.write(
-            json.dumps(
-                {"count": len(events), "events": [event.to_dict() for event in events]},
-                sort_keys=True,
+    try:
+        if args.command == "ingest-event":
+            event = runtime.ingest_event(
+                _load_json_arg(args.event_json),
+                expected_tenant_id=args.tenant_id,
+                trusted_context=trusted_context,
             )
-            + "\n"
-        )
-        return 0
+            if state_path is not None:
+                _save_state(state_path, runtime)
+            out.write(json.dumps({"event": event.to_dict()}, sort_keys=True) + "\n")
+            return 0
 
-    if args.command == "query":
-        trust_states_raw = _load_json_arg(args.trust_states_json)
-        policy_context = _load_json_arg(args.policy_json)
-        if not isinstance(policy_context, dict):
-            raise ValueError("--policy-json must decode to a JSON object")
-        policy_context["tenant_id"] = args.tenant_id
-        records = runtime.query(
-            policy_context=policy_context,
-            trusted_context=trusted_context,
-            trust_states=set(trust_states_raw) if trust_states_raw is not None else None,
-            limit=args.limit,
-        )
-        out.write(json.dumps({"count": len(records), "records": records}, sort_keys=True) + "\n")
-        return 0
+        if args.command == "import-records":
+            events = runtime.import_records(
+                _load_json_arg(args.records_json),
+                actor=_load_json_arg(args.actor_json),
+                default_timestamp=args.default_timestamp,
+                start_sequence=args.start_sequence,
+                tenant_id=args.tenant_id,
+                expected_tenant_id=args.tenant_id,
+                trusted_context=trusted_context,
+            )
+            if state_path is not None:
+                _save_state(state_path, runtime)
+            out.write(
+                json.dumps(
+                    {"count": len(events), "events": [event.to_dict() for event in events]},
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+            return 0
 
-    if args.command == "explain":
-        trace = runtime.explain(
-            args.memory_id,
-            policy_context={"tenant_id": args.tenant_id},
-            trusted_context=trusted_context,
-        )
-        out.write(json.dumps({"memory_id": args.memory_id, "trace": trace}, sort_keys=True) + "\n")
-        return 0
+        if args.command == "query":
+            trust_states_raw = _load_json_arg(args.trust_states_json)
+            policy_context = _load_json_arg(args.policy_json)
+            if not isinstance(policy_context, dict):
+                raise ValueError("--policy-json must decode to a JSON object")
+            policy_context["tenant_id"] = args.tenant_id
+            records = runtime.query(
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+                trust_states=set(trust_states_raw) if trust_states_raw is not None else None,
+                limit=args.limit,
+            )
+            out.write(json.dumps({"count": len(records), "records": records}, sort_keys=True) + "\n")
+            return 0
 
-    if args.command == "export-snapshot":
-        policy_context = _load_json_arg(args.policy_json)
-        if not isinstance(policy_context, dict):
-            raise ValueError("--policy-json must decode to a JSON object")
-        policy_context["tenant_id"] = args.tenant_id
-        snapshot = runtime.export_snapshot(
-            policy_context=policy_context,
-            trusted_context=trusted_context,
-        )
-        out.write(json.dumps(snapshot, sort_keys=True) + "\n")
-        return 0
+        if args.command == "explain":
+            trace = runtime.explain(
+                args.memory_id,
+                policy_context={"tenant_id": args.tenant_id},
+                trusted_context=trusted_context,
+            )
+            out.write(json.dumps({"memory_id": args.memory_id, "trace": trace}, sort_keys=True) + "\n")
+            return 0
 
-    if args.command == "export-provenance":
-        sequence_range = None
-        if args.range_start is not None or args.range_end is not None:
-            if args.range_start is None or args.range_end is None:
-                raise ValueError("both --range-start and --range-end are required together")
-            sequence_range = (args.range_start, args.range_end)
-        provenance = runtime.export_provenance(
-            policy_context={"tenant_id": args.tenant_id},
-            trusted_context=trusted_context,
-            memory_id=args.memory_id,
-            sequence_range=sequence_range,
-        )
-        out.write(json.dumps(provenance, sort_keys=True) + "\n")
-        return 0
+        if args.command == "export-snapshot":
+            policy_context = _load_json_arg(args.policy_json)
+            if not isinstance(policy_context, dict):
+                raise ValueError("--policy-json must decode to a JSON object")
+            policy_context["tenant_id"] = args.tenant_id
+            snapshot = runtime.export_snapshot(
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+            )
+            out.write(json.dumps(snapshot, sort_keys=True) + "\n")
+            return 0
 
-    raise ValueError(f"unknown command: {args.command}")
+        if args.command == "export-provenance":
+            sequence_range = None
+            if args.range_start is not None or args.range_end is not None:
+                if args.range_start is None or args.range_end is None:
+                    raise ValueError("both --range-start and --range-end are required together")
+                sequence_range = (args.range_start, args.range_end)
+            provenance = runtime.export_provenance(
+                policy_context={"tenant_id": args.tenant_id},
+                trusted_context=trusted_context,
+                memory_id=args.memory_id,
+                sequence_range=sequence_range,
+            )
+            out.write(json.dumps(provenance, sort_keys=True) + "\n")
+            return 0
+
+        raise ValueError(f"unknown command: {args.command}")
+    finally:
+        try:
+            runtime.close()
+        except Exception:
+            pass
 
 
 def main() -> int:

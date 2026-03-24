@@ -6,9 +6,9 @@ Project details, direction and resources to learn from:
 - The team explicitly likes the "fabric" metaphor and wants to lean into a spacetime/causality narrative.
 - The product direction is to turn prior labs/POCs into one governed memory infrastructure system.
 - Source projects to learn from:
-  - `../../entropy-os/`
-  - `../../memory-half-life/`
-  - `../../memory-poisoning-supply-chain/`
+  - `../entropy-os/`
+  - `../memory-half-life/`
+  - `../memory-poisoning-supply-chain/`
 - OWASP threat model detailing memory poisoning in [OWASP ASI06: Memory & Context Poisoning](./OWASP-Top-10-for-Agentic-Applications-2026-12.6-1.txt)
 
 ## Product intent (compressed)
@@ -34,7 +34,7 @@ Build infrastructure for governed agent memory—durable controls at the system 
 
 This project should be the convergence of three prior efforts. The goal is not to copy repos wholesale, but to inherit strong primitives and upgrade them for product-grade governance.
 
-## 1) Inherit from `../../memory-poisoning-supply-chain`
+## 1) Inherit from `../memory-poisoning-supply-chain`
 
 ### High-value artifacts
 
@@ -58,7 +58,7 @@ This project should be the convergence of three prior efforts. The goal is not t
 - Separate runtime internals from export APIs (no direct internal map access in prod code).
 - Convert lab-specific scenario semantics into formal acceptance tests.
 
-## 2) Inherit from `../../entropy-os`
+## 2) Inherit from `../entropy-os`
 
 ### High-value artifacts
 
@@ -79,7 +79,7 @@ This project should be the convergence of three prior efforts. The goal is not t
 - Keep deterministic tick support for testing, but allow wall-clock metadata in production envelopes.
 - Preserve canonical serialization in exports and provenance slices.
 
-## 3) Inherit from `../../memory-half-life`
+## 3) Inherit from `../memory-half-life`
 
 ### High-value artifacts
 

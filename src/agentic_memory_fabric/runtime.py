@@ -10,9 +10,14 @@ from uuid import uuid4
 
 from .crypto import KeyMaterial, verify_event_signature
 from .decay import DecayPolicy
-from .events import Actor, EventEnvelope
+from .events import Actor, EventEnvelope, canonical_payload_hash
 from .explain import explain
 from .export import export_provenance_log, export_sbom_snapshot
+from .graph import (
+    GRAPH_EXPANDABLE_EDGE_KINDS,
+    direct_retrieval_score,
+    expanded_retrieval_score,
+)
 from .importer import append_imported_records
 from .log import AppendOnlyEventLog, EventLog
 from .policy import (
@@ -20,12 +25,22 @@ from .policy import (
     PolicyContext,
     evaluate_query_gate,
 )
+from .promotion import PromotionAssessment, compute_promotion_score
 from .query_index import InMemoryQueryIndex, QueryIndex
 from .replay import MemoryState, replay_events
 from .retrieval import get_outcome, query_with_summary, to_retrieval_record
 from .sqlite_store import SQLiteEventLog
 
 AuditSink = Callable[[Mapping[str, Any]], None]
+
+
+@dataclass(frozen=True)
+class QueryCandidate:
+    memory_id: str
+    retrieval_score: float
+    retrieval_mode: str
+    indexed_event_id: str
+    expanded_rank: int
 
 
 @dataclass
@@ -153,7 +168,40 @@ class MemoryRuntime:
         return out
 
     def _validate_dynamic_event(self, event: EventEnvelope) -> None:
-        if event.event_type not in {"recalled", "reconsolidated"}:
+        if event.event_type not in {
+            "recalled",
+            "reconsolidated",
+            "promoted",
+            "linked",
+            "reinforced",
+            "conflicted",
+        }:
+            return
+        if event.event_type == "promoted":
+            if self.state_map().get(event.memory_id) is not None:
+                raise ValueError("promoted events must create a new semantic memory")
+            if (
+                len(event.promoted_from_memory_ids) == 0
+                or len(event.promoted_from_memory_ids) != len(event.promoted_from_event_ids)
+            ):
+                raise ValueError(
+                    "promoted events require aligned promoted_from_memory_ids and promoted_from_event_ids"
+                )
+            if tuple(event.previous_events) != tuple(event.promoted_from_event_ids):
+                raise ValueError("promoted events must point to the source head events")
+            for source_memory_id, source_event_id in zip(
+                event.promoted_from_memory_ids,
+                event.promoted_from_event_ids,
+            ):
+                state = self.state_map().get(source_memory_id)
+                if state is None:
+                    raise ValueError("promoted events require existing source memories")
+                if state.tenant_id != event.tenant_id:
+                    raise ValueError("promoted events must stay within a single tenant")
+                if state.last_event_id != source_event_id:
+                    raise ValueError("promoted events must reference current source heads")
+                if state.memory_class != "episodic":
+                    raise ValueError("promoted events may only derive from episodic memories")
             return
         state = self.state_map().get(event.memory_id)
         if state is None:
@@ -162,6 +210,18 @@ class MemoryRuntime:
             raise ValueError(
                 f"{event.event_type} events must point to the current memory head"
             )
+        if event.event_type in {"linked", "reinforced", "conflicted"}:
+            if event.payload_hash != state.payload_hash:
+                raise ValueError(
+                    f"{event.event_type} events must preserve the current payload_hash"
+                )
+            if event.target_memory_id is not None:
+                target_state = self.state_map().get(event.target_memory_id)
+                if target_state is None:
+                    raise ValueError(f"{event.event_type} events require an existing target memory")
+                if target_state.tenant_id != state.tenant_id:
+                    raise ValueError(f"{event.event_type} events must stay within a single tenant")
+            return
         if event.event_type == "recalled":
             if event.trust_transition is not None:
                 raise ValueError("recalled events must not include trust_transition")
@@ -212,6 +272,52 @@ class MemoryRuntime:
         outcome = get_outcome(memory_id, self.state_map(), ctx)
         return None if outcome.record is None else outcome.record.__dict__
 
+    def _assess_promotion_state(
+        self,
+        memory_id: str,
+        *,
+        policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
+    ) -> tuple[PolicyContext, PromotionAssessment]:
+        ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
+        state = self.state_map().get(memory_id)
+        if state is None:
+            return ctx, PromotionAssessment(
+                memory_id=memory_id,
+                tenant_id=ctx.tenant_id,
+                memory_class=None,
+                source_event_id=None,
+                promotion_score=None,
+                promotion_eligible=False,
+                denial_reason="memory_not_found",
+                override_used=False,
+                promoted_from_memory_ids=(),
+            )
+
+        outcome = get_outcome(memory_id, self.state_map(), ctx)
+        override_used = False if outcome.record is None else outcome.record.override_used
+        denial_reason = outcome.denial_reason if outcome.record is None else None
+        if denial_reason is None:
+            if state.memory_class != "episodic":
+                denial_reason = "memory_class_not_promotable"
+            elif not state.queryable_payload_present:
+                denial_reason = "queryable_payload_required_for_promotion"
+        return ctx, PromotionAssessment(
+            memory_id=memory_id,
+            tenant_id=state.tenant_id,
+            memory_class=state.memory_class,
+            source_event_id=state.last_event_id,
+            promotion_score=compute_promotion_score(
+                state,
+                current_tick=ctx.current_tick,
+                decay_policy=ctx.decay_policy,
+            ),
+            promotion_eligible=denial_reason is None,
+            denial_reason=denial_reason,
+            override_used=override_used,
+            promoted_from_memory_ids=state.promoted_from_memory_ids,
+        )
+
     def _append_dynamic_event(
         self,
         *,
@@ -226,6 +332,9 @@ class MemoryRuntime:
         evidence_refs: list[Mapping[str, Any]] | None = None,
         signature: Mapping[str, Any] | None = None,
         attestation: Mapping[str, Any] | None = None,
+        target_memory_id: str | None = None,
+        edge_weight: float | None = None,
+        edge_reason: str | None = None,
     ) -> EventEnvelope:
         state = self.state_map().get(memory_id)
         if state is None:
@@ -245,6 +354,12 @@ class MemoryRuntime:
         }
         if payload is not None:
             event_data["payload"] = payload
+        if target_memory_id is not None:
+            event_data["target_memory_id"] = target_memory_id
+        if edge_weight is not None:
+            event_data["edge_weight"] = edge_weight
+        if edge_reason is not None:
+            event_data["edge_reason"] = edge_reason
         if evidence_refs is not None:
             event_data["evidence_refs"] = evidence_refs
         if signature is not None:
@@ -281,6 +396,26 @@ class MemoryRuntime:
             self._query_index_cache = InMemoryQueryIndex.build(self.state_map())
         return self._query_index_cache
 
+    def _reference_tick(self, state_map: Mapping[str, MemoryState]) -> int:
+        if not state_map:
+            return 0
+        return max(state.last_tick for state in state_map.values())
+
+    def _normalize_graph_edge_kinds(
+        self,
+        graph_edge_kinds: list[str] | tuple[str, ...] | set[str] | None,
+    ) -> tuple[str, ...]:
+        if graph_edge_kinds is None:
+            return tuple(sorted(GRAPH_EXPANDABLE_EDGE_KINDS))
+        normalized: list[str] = []
+        for item in graph_edge_kinds:
+            edge_kind = str(item).strip().lower()
+            if edge_kind not in {"linked", "reinforced", "conflicted"}:
+                raise ValueError("graph_edge_kinds entries must be linked, reinforced, or conflicted")
+            if edge_kind not in normalized:
+                normalized.append(edge_kind)
+        return tuple(normalized)
+
     def _matches_structured_filter(
         self,
         state: MemoryState,
@@ -291,18 +426,62 @@ class MemoryRuntime:
         allowed_fields = {
             "memory_id",
             "tenant_id",
+            "memory_class",
             "trust_state",
             "lifecycle_state",
             "signature_state",
             "version",
             "queryable_payload_present",
+            "promotion_eligible",
+            "min_reinforcement_score",
+            "max_conflict_score",
         }
         for key, expected in structured_filter.items():
             if key not in allowed_fields:
                 raise ValueError(f"unsupported structured_filter field: {key}")
+            if key == "min_reinforcement_score":
+                if state.reinforcement_score < float(expected):
+                    return False
+                continue
+            if key == "max_conflict_score":
+                if state.conflict_score > float(expected):
+                    return False
+                continue
             if getattr(state, key) != expected:
                 return False
         return True
+
+    def _query_candidate_record(
+        self,
+        candidate: QueryCandidate,
+        *,
+        state_map: dict[str, MemoryState],
+        ctx: PolicyContext,
+        trust_states: set[str] | None,
+        structured_filter: Mapping[str, Any] | None,
+    ) -> tuple[dict[str, Any] | None, str | None, bool]:
+        state = state_map.get(candidate.memory_id)
+        if state is None:
+            return None, None, False
+        if state.last_event_id != candidate.indexed_event_id:
+            return None, None, False
+        if trust_states is not None and state.trust_state not in trust_states:
+            return None, "__trust_state_filtered__", False
+        if not self._matches_structured_filter(state, structured_filter):
+            return None, "__structured_filtered__", False
+        outcome = get_outcome(candidate.memory_id, state_map, ctx)
+        if outcome.record is None:
+            return None, outcome.denial_reason or "policy_denied", False
+        decision_record = to_retrieval_record(
+            state,
+            why_sound=outcome.record.why_sound,
+            denial_reason=outcome.record.denial_reason,
+            override_used=outcome.record.override_used,
+            retrieval_score=candidate.retrieval_score,
+            retrieval_mode=candidate.retrieval_mode,
+            indexed_event_id=candidate.indexed_event_id,
+        )
+        return decision_record.__dict__, None, decision_record.override_used
 
     def state_map(self) -> dict[str, MemoryState]:
         if self._state_cache is None:
@@ -370,6 +549,8 @@ class MemoryRuntime:
         structured_filter: Mapping[str, Any] | None = None,
         trust_states: set[str] | None = None,
         limit: int | None = None,
+        graph_expand: bool = False,
+        graph_edge_kinds: list[str] | tuple[str, ...] | set[str] | None = None,
     ) -> dict[str, Any]:
         ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
         gate = evaluate_query_gate(ctx)
@@ -403,6 +584,7 @@ class MemoryRuntime:
         state_map = self.state_map()
         if structured_filter is not None and not isinstance(structured_filter, Mapping):
             raise ValueError("structured_filter must be an object when provided")
+        requested_graph_edge_kinds = self._normalize_graph_edge_kinds(graph_edge_kinds)
         if query_text is None or not str(query_text).strip():
             if structured_filter is None:
                 records, summary = query_with_summary(
@@ -447,6 +629,7 @@ class MemoryRuntime:
                 )
             records_out = [record.__dict__ for record in records]
         else:
+            reference_tick = self._reference_tick(state_map)
             considered = 0
             trust_state_filtered = 0
             override_used_count = 0
@@ -457,35 +640,91 @@ class MemoryRuntime:
                 tenant_id=ctx.tenant_id,
                 limit=None,
             )
+            candidates: dict[str, QueryCandidate] = {}
+            direct_memory_ids: list[str] = []
             for hit in hits:
                 state = state_map.get(hit.memory_id)
                 if state is None:
                     continue
-                considered += 1
                 if state.last_event_id != hit.indexed_event_id:
                     continue
-                if trust_states is not None and state.trust_state not in trust_states:
+                score = direct_retrieval_score(
+                    lexical_score=hit.retrieval_score,
+                    state=state,
+                    reference_tick=reference_tick,
+                )
+                candidates[hit.memory_id] = QueryCandidate(
+                    memory_id=hit.memory_id,
+                    retrieval_score=score,
+                    retrieval_mode="lexical_graph_v1" if graph_expand else hit.retrieval_mode,
+                    indexed_event_id=hit.indexed_event_id,
+                    expanded_rank=0,
+                )
+                direct_memory_ids.append(hit.memory_id)
+            if graph_expand:
+                for source_memory_id in direct_memory_ids:
+                    source_candidate = candidates[source_memory_id]
+                    source_state = state_map.get(source_memory_id)
+                    if source_state is None:
+                        continue
+                    for target_memory_id, edge_kind in source_state.relationship_edges:
+                        if edge_kind not in requested_graph_edge_kinds:
+                            continue
+                        target_state = state_map.get(target_memory_id)
+                        if target_state is None:
+                            continue
+                        expanded = QueryCandidate(
+                            memory_id=target_memory_id,
+                            retrieval_score=expanded_retrieval_score(
+                                source_score=source_candidate.retrieval_score,
+                                target_state=target_state,
+                                edge_kind=edge_kind,
+                                edge_weight=None,
+                                reference_tick=reference_tick,
+                            ),
+                            retrieval_mode="graph_expand_v1",
+                            indexed_event_id=target_state.last_event_id,
+                            expanded_rank=1,
+                        )
+                        existing = candidates.get(target_memory_id)
+                        if existing is None or (
+                            existing.expanded_rank > expanded.expanded_rank
+                            or (
+                                existing.expanded_rank == expanded.expanded_rank
+                                and existing.retrieval_score < expanded.retrieval_score
+                            )
+                        ):
+                            candidates[target_memory_id] = expanded
+            sorted_candidates = sorted(
+                candidates.values(),
+                key=lambda item: (
+                    item.expanded_rank,
+                    -item.retrieval_score,
+                    item.memory_id,
+                    item.indexed_event_id,
+                ),
+            )
+            for candidate in sorted_candidates:
+                considered += 1
+                record, reason, override_used = self._query_candidate_record(
+                    candidate,
+                    state_map=state_map,
+                    ctx=ctx,
+                    trust_states=trust_states,
+                    structured_filter=structured_filter,
+                )
+                if reason == "__trust_state_filtered__":
                     trust_state_filtered += 1
                     continue
-                if not self._matches_structured_filter(state, structured_filter):
+                if reason == "__structured_filtered__":
                     continue
-                outcome = get_outcome(hit.memory_id, state_map, ctx)
-                if outcome.record is None:
-                    reason = outcome.denial_reason or "policy_denied"
-                    denied_by_reason[reason] = denied_by_reason.get(reason, 0) + 1
+                if record is None:
+                    if reason is not None:
+                        denied_by_reason[reason] = denied_by_reason.get(reason, 0) + 1
                     continue
-                decision_record = to_retrieval_record(
-                    state,
-                    why_sound=outcome.record.why_sound,
-                    denial_reason=outcome.record.denial_reason,
-                    override_used=outcome.record.override_used,
-                    retrieval_score=hit.retrieval_score,
-                    retrieval_mode=hit.retrieval_mode,
-                    indexed_event_id=hit.indexed_event_id,
-                )
-                if decision_record.override_used:
+                if override_used:
                     override_used_count += 1
-                records_out.append(decision_record.__dict__)
+                records_out.append(record)
                 if limit is not None and len(records_out) >= limit:
                     break
             from .retrieval import QueryAuditSummary  # local import to avoid cycle
@@ -516,6 +755,8 @@ class MemoryRuntime:
                 "override_used_count": summary.override_used_count,
                 "denied_by_reason": dict(summary.denied_by_reason),
                 "query_text_present": bool(query_text and str(query_text).strip()),
+                "graph_expand": graph_expand,
+                "graph_edge_kinds": list(requested_graph_edge_kinds) if graph_expand else [],
                 "query_allowed": True,
                 "query_denial_reason": gate.denial_reason,
                 "query_override_used": gate.override_used,
@@ -559,6 +800,356 @@ class MemoryRuntime:
             trusted_context=trusted_context,
             audit_type="memory.get",
         )
+
+    def assess_promotion(
+        self,
+        memory_id: str,
+        *,
+        policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        ctx, assessment = self._assess_promotion_state(
+            memory_id,
+            policy_context=policy_context,
+            trusted_context=trusted_context,
+        )
+        result = {
+            "memory_id": assessment.memory_id,
+            "tenant_id": assessment.tenant_id,
+            "memory_class": assessment.memory_class,
+            "source_event_id": assessment.source_event_id,
+            "promotion_score": assessment.promotion_score,
+            "promotion_eligible": assessment.promotion_eligible,
+            "denial_reason": assessment.denial_reason,
+            "override_used": assessment.override_used,
+            "promoted_from_memory_ids": list(assessment.promoted_from_memory_ids),
+        }
+        self._emit_audit(
+            {
+                "type": "memory.assess_promotion",
+                "tenant_id": ctx.tenant_id,
+                "memory_id": memory_id,
+                "promotion_score": assessment.promotion_score,
+                "promotion_eligible": assessment.promotion_eligible,
+                "denial_reason": assessment.denial_reason,
+                "override_used": assessment.override_used,
+            }
+        )
+        return result
+
+    def promote(
+        self,
+        memory_ids: list[str] | tuple[str, ...],
+        *,
+        actor: Mapping[str, Any] | Actor,
+        payload: Any,
+        policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
+        promoted_memory_id: str | None = None,
+        event_id: str | None = None,
+        timestamp: Mapping[str, Any] | None = None,
+        evidence_refs: list[Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        if not memory_ids:
+            raise ValueError("memory_ids must include at least one source memory")
+        if len({str(memory_id) for memory_id in memory_ids}) != len(memory_ids):
+            raise ValueError("memory_ids must not contain duplicates")
+
+        ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
+        state_map = self.state_map()
+        source_states: list[MemoryState] = []
+        source_denials: dict[str, str] = {}
+        for memory_id in memory_ids:
+            _ctx, assessment = self._assess_promotion_state(
+                memory_id,
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+            )
+            if not assessment.promotion_eligible:
+                source_denials[str(memory_id)] = assessment.denial_reason or "promotion_denied"
+                continue
+            state = state_map.get(str(memory_id))
+            if state is None:
+                source_denials[str(memory_id)] = "memory_not_found"
+                continue
+            source_states.append(state)
+        if source_denials:
+            denial_reason = next(iter(source_denials.values()))
+            result = {
+                "outcome": "denied",
+                "record": None,
+                "denial_reason": denial_reason,
+                "source_denials": source_denials,
+            }
+            self._emit_audit(
+                {
+                    "type": "memory.promote",
+                    "tenant_id": ctx.tenant_id,
+                    "memory_ids": list(memory_ids),
+                    "outcome": "denied",
+                    "denial_reason": denial_reason,
+                    "source_denials": dict(source_denials),
+                }
+            )
+            return result
+
+        tenant_ids = {state.tenant_id for state in source_states}
+        if len(tenant_ids) != 1:
+            raise ValueError("promotion sources must belong to a single tenant")
+        new_memory_id = promoted_memory_id or str(uuid4())
+        if new_memory_id in state_map:
+            raise ValueError("promoted_memory_id already exists")
+        sequence = self._next_sequence()
+        actor_dict = actor.to_dict() if isinstance(actor, Actor) else dict(actor)
+        source_event_ids = [state.last_event_id for state in source_states]
+        event_data: dict[str, Any] = {
+            "event_id": event_id or str(uuid4()),
+            "sequence": sequence,
+            "timestamp": self._normalize_timestamp(timestamp, sequence=sequence),
+            "actor": actor_dict,
+            "tenant_id": source_states[0].tenant_id,
+            "memory_id": new_memory_id,
+            "event_type": "promoted",
+            "memory_class": "semantic",
+            "previous_events": list(source_event_ids),
+            "promoted_from_memory_ids": [state.memory_id for state in source_states],
+            "promoted_from_event_ids": list(source_event_ids),
+            "payload": payload,
+            "payload_hash": canonical_payload_hash(payload),
+        }
+        if evidence_refs is not None:
+            event_data["evidence_refs"] = evidence_refs
+        event = self.ingest_event(
+            event_data,
+            expected_tenant_id=source_states[0].tenant_id,
+            trusted_context=trusted_context,
+        )
+        record = self._peek_record(
+            new_memory_id,
+            policy_context=policy_context,
+            trusted_context=trusted_context,
+        )
+        result = {
+            "outcome": "appended",
+            "record": record,
+            "denial_reason": None,
+            "event": event.to_dict(),
+            "promoted_memory_id": new_memory_id,
+            "source_memory_ids": [state.memory_id for state in source_states],
+        }
+        self._emit_audit(
+            {
+                "type": "memory.promote",
+                "tenant_id": ctx.tenant_id,
+                "memory_ids": [state.memory_id for state in source_states],
+                "promoted_memory_id": new_memory_id,
+                "outcome": "appended",
+                "denial_reason": None,
+                "event_id": event.event_id,
+            }
+        )
+        return result
+
+    def link(
+        self,
+        memory_id: str,
+        related_memory_id: str,
+        *,
+        actor: Mapping[str, Any] | Actor,
+        policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
+        event_id: str | None = None,
+        timestamp: Mapping[str, Any] | None = None,
+        evidence_refs: list[Mapping[str, Any]] | None = None,
+        edge_weight: float | None = None,
+        edge_reason: str | None = None,
+    ) -> dict[str, Any]:
+        ctx, outcome = self._policy_outcome(
+            memory_id,
+            policy_context=policy_context,
+            trusted_context=trusted_context,
+        )
+        if outcome.outcome != "allowed" or outcome.record is None:
+            result = self._mutation_result(
+                outcome=outcome.outcome,
+                denial_reason=outcome.denial_reason,
+            )
+            self._emit_audit(
+                {
+                    "type": "memory.link",
+                    "tenant_id": ctx.tenant_id,
+                    "memory_id": memory_id,
+                    "target_memory_id": related_memory_id,
+                    "outcome": outcome.outcome,
+                    "denial_reason": outcome.denial_reason,
+                }
+            )
+            return result
+        event = self._append_dynamic_event(
+            memory_id=memory_id,
+            event_type="linked",
+            actor=actor,
+            payload_hash=self.state_map()[memory_id].payload_hash,
+            trusted_context=trusted_context,
+            event_id=event_id,
+            timestamp=timestamp,
+            evidence_refs=evidence_refs,
+            target_memory_id=related_memory_id,
+            edge_weight=edge_weight,
+            edge_reason=edge_reason,
+        )
+        record = self._peek_record(
+            memory_id,
+            policy_context=policy_context,
+            trusted_context=trusted_context,
+        )
+        result = self._mutation_result(outcome="appended", record=record, event=event)
+        self._emit_audit(
+            {
+                "type": "memory.link",
+                "tenant_id": ctx.tenant_id,
+                "memory_id": memory_id,
+                "target_memory_id": related_memory_id,
+                "outcome": "appended",
+                "denial_reason": None,
+                "event_id": event.event_id,
+            }
+        )
+        return result
+
+    def reinforce(
+        self,
+        memory_id: str,
+        *,
+        actor: Mapping[str, Any] | Actor,
+        related_memory_id: str | None = None,
+        policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
+        event_id: str | None = None,
+        timestamp: Mapping[str, Any] | None = None,
+        evidence_refs: list[Mapping[str, Any]] | None = None,
+        edge_weight: float | None = None,
+        edge_reason: str | None = None,
+    ) -> dict[str, Any]:
+        ctx, outcome = self._policy_outcome(
+            memory_id,
+            policy_context=policy_context,
+            trusted_context=trusted_context,
+        )
+        if outcome.outcome != "allowed" or outcome.record is None:
+            result = self._mutation_result(
+                outcome=outcome.outcome,
+                denial_reason=outcome.denial_reason,
+            )
+            self._emit_audit(
+                {
+                    "type": "memory.reinforce",
+                    "tenant_id": ctx.tenant_id,
+                    "memory_id": memory_id,
+                    "target_memory_id": related_memory_id,
+                    "outcome": outcome.outcome,
+                    "denial_reason": outcome.denial_reason,
+                }
+            )
+            return result
+        event = self._append_dynamic_event(
+            memory_id=memory_id,
+            event_type="reinforced",
+            actor=actor,
+            payload_hash=self.state_map()[memory_id].payload_hash,
+            trusted_context=trusted_context,
+            event_id=event_id,
+            timestamp=timestamp,
+            evidence_refs=evidence_refs,
+            target_memory_id=related_memory_id,
+            edge_weight=edge_weight,
+            edge_reason=edge_reason,
+        )
+        record = self._peek_record(
+            memory_id,
+            policy_context=policy_context,
+            trusted_context=trusted_context,
+        )
+        result = self._mutation_result(outcome="appended", record=record, event=event)
+        self._emit_audit(
+            {
+                "type": "memory.reinforce",
+                "tenant_id": ctx.tenant_id,
+                "memory_id": memory_id,
+                "target_memory_id": related_memory_id,
+                "outcome": "appended",
+                "denial_reason": None,
+                "event_id": event.event_id,
+            }
+        )
+        return result
+
+    def conflict(
+        self,
+        memory_id: str,
+        conflicting_memory_id: str,
+        *,
+        actor: Mapping[str, Any] | Actor,
+        policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
+        event_id: str | None = None,
+        timestamp: Mapping[str, Any] | None = None,
+        evidence_refs: list[Mapping[str, Any]] | None = None,
+        edge_weight: float | None = None,
+        edge_reason: str | None = None,
+    ) -> dict[str, Any]:
+        ctx, outcome = self._policy_outcome(
+            memory_id,
+            policy_context=policy_context,
+            trusted_context=trusted_context,
+        )
+        if outcome.outcome != "allowed" or outcome.record is None:
+            result = self._mutation_result(
+                outcome=outcome.outcome,
+                denial_reason=outcome.denial_reason,
+            )
+            self._emit_audit(
+                {
+                    "type": "memory.conflict",
+                    "tenant_id": ctx.tenant_id,
+                    "memory_id": memory_id,
+                    "target_memory_id": conflicting_memory_id,
+                    "outcome": outcome.outcome,
+                    "denial_reason": outcome.denial_reason,
+                }
+            )
+            return result
+        event = self._append_dynamic_event(
+            memory_id=memory_id,
+            event_type="conflicted",
+            actor=actor,
+            payload_hash=self.state_map()[memory_id].payload_hash,
+            trusted_context=trusted_context,
+            event_id=event_id,
+            timestamp=timestamp,
+            evidence_refs=evidence_refs,
+            target_memory_id=conflicting_memory_id,
+            edge_weight=edge_weight,
+            edge_reason=edge_reason,
+        )
+        record = self._peek_record(
+            memory_id,
+            policy_context=policy_context,
+            trusted_context=trusted_context,
+        )
+        result = self._mutation_result(outcome="appended", record=record, event=event)
+        self._emit_audit(
+            {
+                "type": "memory.conflict",
+                "tenant_id": ctx.tenant_id,
+                "memory_id": memory_id,
+                "target_memory_id": conflicting_memory_id,
+                "outcome": "appended",
+                "denial_reason": None,
+                "event_id": event.event_id,
+            }
+        )
+        return result
 
     def recall(
         self,

@@ -13,6 +13,7 @@ from .replay import MemoryState
 class RetrievalRecord:
     memory_id: str
     tenant_id: str
+    memory_class: str
     trust_state: str
     version: int
     last_event_id: str
@@ -26,6 +27,13 @@ class RetrievalRecord:
     last_recall_tick: int | None
     last_write_tick: int | None
     queryable_payload_present: bool
+    promotion_score: float
+    promotion_eligible: bool
+    promoted_from_memory_ids: tuple[str, ...]
+    reinforcement_score: float
+    conflict_score: float
+    related_memory_ids: tuple[str, ...]
+    conflicted_memory_ids: tuple[str, ...]
     retrieval_score: float | None
     retrieval_mode: str | None
     indexed_event_id: str | None
@@ -62,6 +70,7 @@ def to_retrieval_record(
     return RetrievalRecord(
         memory_id=state.memory_id,
         tenant_id=state.tenant_id,
+        memory_class=state.memory_class,
         trust_state=state.trust_state,
         version=state.version,
         last_event_id=state.last_event_id,
@@ -75,6 +84,13 @@ def to_retrieval_record(
         last_recall_tick=state.last_recall_tick,
         last_write_tick=state.last_write_tick,
         queryable_payload_present=state.queryable_payload_present,
+        promotion_score=state.promotion_score,
+        promotion_eligible=state.promotion_eligible,
+        promoted_from_memory_ids=state.promoted_from_memory_ids,
+        reinforcement_score=state.reinforcement_score,
+        conflict_score=state.conflict_score,
+        related_memory_ids=state.related_memory_ids,
+        conflicted_memory_ids=state.conflicted_memory_ids,
         retrieval_score=retrieval_score,
         retrieval_mode=retrieval_mode,
         indexed_event_id=indexed_event_id,

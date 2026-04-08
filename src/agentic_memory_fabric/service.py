@@ -146,6 +146,8 @@ class ServiceApp:
                 structured_filter=payload.get("structured_filter"),
                 trust_states=set(payload["trust_states"]) if payload.get("trust_states") else None,
                 limit=payload.get("limit"),
+                graph_expand=bool(payload.get("graph_expand", False)),
+                graph_edge_kinds=payload.get("graph_edge_kinds"),
             )
             return respond(HTTPStatus.OK, query_result)
 
@@ -160,6 +162,18 @@ class ServiceApp:
                 trusted_context=trusted_context,
             )
             return respond(HTTPStatus.OK, {"memory_id": memory_id, "record": record})
+
+        if method == "POST" and route.startswith("/memory/") and route.endswith("/assess-promotion"):
+            parts = route.split("/")
+            if len(parts) != 4:
+                return _json_response(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+            memory_id = parts[2]
+            assessment = self.runtime.assess_promotion(
+                memory_id,
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+            )
+            return respond(HTTPStatus.OK, assessment)
 
         if method == "POST" and route.startswith("/memory/") and route.endswith("/recall"):
             parts = route.split("/")
@@ -176,6 +190,51 @@ class ServiceApp:
                 evidence_refs=payload.get("evidence_refs"),
             )
             return respond(HTTPStatus.OK, {"memory_id": memory_id, **result})
+
+        if method == "POST" and route == "/link":
+            result = self.runtime.link(
+                payload["source_memory_id"],
+                payload["target_memory_id"],
+                actor=payload["actor"],
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+                event_id=payload.get("event_id"),
+                timestamp=payload.get("timestamp"),
+                evidence_refs=payload.get("evidence_refs"),
+                edge_weight=payload.get("edge_weight"),
+                edge_reason=payload.get("edge_reason"),
+            )
+            return respond(HTTPStatus.OK, result)
+
+        if method == "POST" and route == "/reinforce":
+            result = self.runtime.reinforce(
+                payload["memory_id"],
+                actor=payload["actor"],
+                related_memory_id=payload.get("related_memory_id"),
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+                event_id=payload.get("event_id"),
+                timestamp=payload.get("timestamp"),
+                evidence_refs=payload.get("evidence_refs"),
+                edge_weight=payload.get("edge_weight"),
+                edge_reason=payload.get("edge_reason"),
+            )
+            return respond(HTTPStatus.OK, result)
+
+        if method == "POST" and route == "/conflict":
+            result = self.runtime.conflict(
+                payload["source_memory_id"],
+                payload["target_memory_id"],
+                actor=payload["actor"],
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+                event_id=payload.get("event_id"),
+                timestamp=payload.get("timestamp"),
+                evidence_refs=payload.get("evidence_refs"),
+                edge_weight=payload.get("edge_weight"),
+                edge_reason=payload.get("edge_reason"),
+            )
+            return respond(HTTPStatus.OK, result)
 
         if method == "POST" and route.startswith("/memory/") and route.endswith("/reconsolidate"):
             parts = route.split("/")
@@ -196,6 +255,20 @@ class ServiceApp:
                 attestation=payload.get("attestation"),
             )
             return respond(HTTPStatus.OK, {"memory_id": memory_id, **result})
+
+        if method == "POST" and route == "/promote":
+            result = self.runtime.promote(
+                payload.get("memory_ids", []),
+                actor=payload["actor"],
+                payload=payload["payload"],
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+                promoted_memory_id=payload.get("promoted_memory_id"),
+                event_id=payload.get("event_id"),
+                timestamp=payload.get("timestamp"),
+                evidence_refs=payload.get("evidence_refs"),
+            )
+            return respond(HTTPStatus.OK, result)
 
         if method == "GET" and route.startswith("/memory/") and route.endswith("/explain"):
             parts = route.split("/")

@@ -44,6 +44,8 @@ class ServiceApiTests(unittest.TestCase):
         key_id: str = "dev-key",
         key: bytes = b"super-secret",
         payload: object | None = None,
+        memory_id: str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        memory_class: str | None = None,
     ) -> dict:
         if previous_events is None:
             previous_events = []
@@ -59,10 +61,11 @@ class ServiceApiTests(unittest.TestCase):
                 "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": sequence},
                 "actor": {"id": "svc-memory", "kind": "service"},
                 "tenant_id": "tenant-alpha",
-                "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "memory_id": memory_id,
                 "event_type": event_type,
                 "previous_events": previous_events,
                 "payload_hash": payload_hash,
+                **({"memory_class": memory_class} if memory_class is not None else {}),
                 **({"payload": payload} if payload is not None else {}),
             }
         )
@@ -224,6 +227,99 @@ class ServiceApiTests(unittest.TestCase):
             "99999999-9999-4999-8999-999999999999",
         )
 
+    def test_graph_endpoints_and_query_expansion(self) -> None:
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        app = ServiceApp(runtime=runtime)
+        app.handle_request(
+            "POST",
+            "/ingest/event",
+            json.dumps(
+                {
+                    "event": self._signed_event(
+                        payload={"topic": "alpha memory"},
+                        memory_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    )
+                }
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        app.handle_request(
+            "POST",
+            "/ingest/event",
+            json.dumps(
+                {
+                    "event": self._signed_event(
+                        sequence=2,
+                        event_id="22222222-2222-4222-8222-222222222222",
+                        payload={"topic": "bravo neighbor"},
+                        memory_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    )
+                }
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        status_link, payload_link = app.handle_request(
+            "POST",
+            "/link",
+            json.dumps(
+                {
+                    "source_memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "target_memory_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    "actor": {"id": "svc-memory", "kind": "service"},
+                    "event_id": "33333333-3333-4333-8333-333333333333",
+                    "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 3},
+                }
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_link, 200)
+        self.assertEqual(payload_link["event"]["event_type"], "linked")
+        status_reinforce, payload_reinforce = app.handle_request(
+            "POST",
+            "/reinforce",
+            json.dumps(
+                {
+                    "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "related_memory_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    "actor": {"id": "svc-memory", "kind": "service"},
+                    "event_id": "44444444-4444-4444-8444-444444444444",
+                    "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 4},
+                    "edge_weight": 2.0,
+                }
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_reinforce, 200)
+        self.assertEqual(payload_reinforce["record"]["reinforcement_score"], 2.0)
+        status_conflict, payload_conflict = app.handle_request(
+            "POST",
+            "/conflict",
+            json.dumps(
+                {
+                    "source_memory_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    "target_memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "actor": {"id": "svc-memory", "kind": "service"},
+                    "event_id": "55555555-5555-4555-8555-555555555555",
+                    "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 5},
+                    "edge_weight": 1.5,
+                }
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_conflict, 200)
+        self.assertEqual(payload_conflict["event"]["event_type"], "conflicted")
+        status_query, payload_query = app.handle_request(
+            "POST",
+            "/query",
+            json.dumps({"query_text": "alpha", "graph_expand": True}).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_query, 200)
+        self.assertEqual(payload_query["count"], 2)
+        self.assertEqual(payload_query["records"][0]["memory_id"], "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+        self.assertEqual(payload_query["records"][1]["memory_id"], "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+        self.assertEqual(payload_query["records"][1]["retrieval_mode"], "graph_expand_v1")
+
     def test_semantic_query_over_imported_payloads(self) -> None:
         app = ServiceApp(auth_tokens=AUTH_TOKENS)
         app.handle_request(
@@ -301,6 +397,76 @@ class ServiceApiTests(unittest.TestCase):
         self.assertEqual(payload_recon["outcome"], "appended")
         self.assertEqual(payload_recon["record"]["version"], 2)
         self.assertEqual(payload_recon["record"]["reconsolidation_count"], 1)
+
+    def test_assess_promotion_and_promote_endpoints(self) -> None:
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        app = ServiceApp(runtime=runtime, auth_tokens=AUTH_TOKENS)
+        app.handle_request(
+            "POST",
+            "/ingest/event",
+            json.dumps(
+                {"event": self._signed_event(payload={"topic": "episodic alpha"})}
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+
+        status_assess, payload_assess = app.handle_request(
+            "POST",
+            "/memory/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/assess-promotion",
+            b"{}",
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_assess, 200)
+        self.assertTrue(payload_assess["promotion_eligible"])
+        self.assertEqual(payload_assess["memory_class"], "episodic")
+
+        status_promote, payload_promote = app.handle_request(
+            "POST",
+            "/promote",
+            (
+                b'{"memory_ids":["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],'
+                b'"actor":{"id":"auditor","kind":"service"},'
+                b'"payload":{"topic":"semantic alpha"},'
+                b'"promoted_memory_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",'
+                b'"event_id":"22222222-2222-4222-8222-222222222222",'
+                b'"timestamp":{"wall_time":"2026-03-22T00:00:00Z","tick":2}}'
+            ),
+            headers={"x-tenant-id": "tenant-alpha", "x-auth-token": "token-auditor"},
+        )
+        self.assertEqual(status_promote, 200)
+        self.assertEqual(payload_promote["outcome"], "appended")
+        self.assertEqual(payload_promote["event"]["event_type"], "promoted")
+        self.assertEqual(payload_promote["event"]["memory_class"], "semantic")
+
+    def test_promote_endpoint_denies_bad_source_without_override(self) -> None:
+        app = ServiceApp()
+        app.handle_request(
+            "POST",
+            "/ingest/import",
+            (
+                b'{"records":[{"memory_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",'
+                b'"payload":{"topic":"unsigned source"},"source_id":"seed-1"}],'
+                b'"actor":{"id":"migration-bot","kind":"service"},'
+                b'"default_timestamp":"2026-03-22T00:00:00Z"}'
+            ),
+            headers=TENANT_HEADER,
+        )
+        status, payload = app.handle_request(
+            "POST",
+            "/promote",
+            (
+                b'{"memory_ids":["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"],'
+                b'"actor":{"id":"svc-memory","kind":"service"},'
+                b'"payload":{"topic":"semantic denied"},'
+                b'"promoted_memory_id":"bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",'
+                b'"event_id":"22222222-2222-4222-8222-222222222222",'
+                b'"timestamp":{"wall_time":"2026-03-22T00:00:00Z","tick":2}}'
+            ),
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["outcome"], "denied")
+        self.assertIn("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", payload["source_denials"])
 
     def test_untrusted_policy_override_is_ignored(self) -> None:
         app = ServiceApp()

@@ -15,6 +15,10 @@ VALID_EVENT_TYPES = frozenset(
         "created",
         "updated",
         "superseded",
+        "promoted",
+        "linked",
+        "reinforced",
+        "conflicted",
         "recalled",
         "reconsolidated",
         "quarantined",
@@ -27,6 +31,8 @@ VALID_EVENT_TYPES = frozenset(
 )
 
 VALID_TRUST_STATES = frozenset({"trusted", "quarantined", "expired"})
+VALID_MEMORY_CLASSES = frozenset({"episodic", "semantic"})
+DEFAULT_MEMORY_CLASS = "episodic"
 VALID_ACTOR_KINDS = frozenset({"user", "service", "tool"})
 VALID_EVIDENCE_TYPES = frozenset(
     {"url", "message_id", "file_path", "tool_run_id", "opaque"}
@@ -267,9 +273,15 @@ class EventEnvelope:
     tenant_id: str
     memory_id: str
     event_type: str
+    memory_class: str | None = None
     previous_events: tuple[str, ...] = field(default_factory=tuple)
     payload_hash: str = ""
     payload: Any | None = None
+    promoted_from_memory_ids: tuple[str, ...] = field(default_factory=tuple)
+    promoted_from_event_ids: tuple[str, ...] = field(default_factory=tuple)
+    target_memory_id: str | None = None
+    edge_weight: float | None = None
+    edge_reason: str | None = None
     evidence_refs: tuple[EvidenceRef, ...] = field(default_factory=tuple)
     trust_transition: TrustTransition | None = None
     signature: EventSignature | None = None
@@ -299,9 +311,15 @@ class EventEnvelope:
             tenant_id=data["tenant_id"],
             memory_id=data["memory_id"],
             event_type=data["event_type"],
+            memory_class=data.get("memory_class"),
             previous_events=tuple(data["previous_events"]),
             payload_hash=data["payload_hash"],
             payload=data.get("payload"),
+            promoted_from_memory_ids=tuple(data.get("promoted_from_memory_ids", [])),
+            promoted_from_event_ids=tuple(data.get("promoted_from_event_ids", [])),
+            target_memory_id=data.get("target_memory_id"),
+            edge_weight=data.get("edge_weight"),
+            edge_reason=data.get("edge_reason"),
             evidence_refs=evidence_refs,
             trust_transition=trust_transition,
             signature=signature,
@@ -317,11 +335,24 @@ class EventEnvelope:
             "tenant_id": self.tenant_id,
             "memory_id": self.memory_id,
             "event_type": self.event_type,
+            "memory_class": self.memory_class,
             "previous_events": list(self.previous_events),
             "payload_hash": self.payload_hash,
         }
+        if self.memory_class is None:
+            out.pop("memory_class")
         if self.payload is not None:
             out["payload"] = self.payload
+        if self.promoted_from_memory_ids:
+            out["promoted_from_memory_ids"] = list(self.promoted_from_memory_ids)
+        if self.promoted_from_event_ids:
+            out["promoted_from_event_ids"] = list(self.promoted_from_event_ids)
+        if self.target_memory_id is not None:
+            out["target_memory_id"] = self.target_memory_id
+        if self.edge_weight is not None:
+            out["edge_weight"] = self.edge_weight
+        if self.edge_reason is not None:
+            out["edge_reason"] = self.edge_reason
         if self.evidence_refs:
             out["evidence_refs"] = [ref.to_dict() for ref in self.evidence_refs]
         if self.trust_transition is not None:
@@ -368,6 +399,11 @@ def validate_event_envelope(data: Mapping[str, Any]) -> None:
     event_type = _require_non_empty_string(data["event_type"], field_name="event_type")
     if event_type not in VALID_EVENT_TYPES:
         raise ValueError(f"event_type must be one of {sorted(VALID_EVENT_TYPES)}")
+    memory_class = data.get("memory_class")
+    if memory_class is not None:
+        memory_class = _require_non_empty_string(memory_class, field_name="memory_class")
+        if memory_class not in VALID_MEMORY_CLASSES:
+            raise ValueError(f"memory_class must be one of {sorted(VALID_MEMORY_CLASSES)}")
 
     previous_events = data["previous_events"]
     if not isinstance(previous_events, Sequence) or isinstance(previous_events, (str, bytes)):
@@ -390,6 +426,39 @@ def validate_event_envelope(data: Mapping[str, Any]) -> None:
         expected_hash = canonical_payload_hash(payload)
         if expected_hash != payload_hash:
             raise ValueError("payload_hash must match the canonical hash of payload when payload is provided")
+
+    promoted_from_memory_ids = data.get("promoted_from_memory_ids")
+    if promoted_from_memory_ids is not None:
+        if not isinstance(promoted_from_memory_ids, Sequence) or isinstance(
+            promoted_from_memory_ids, (str, bytes)
+        ):
+            raise ValueError("promoted_from_memory_ids must be an array when provided")
+        for item in promoted_from_memory_ids:
+            _as_uuid(item, field_name="promoted_from_memory_ids[]")
+
+    promoted_from_event_ids = data.get("promoted_from_event_ids")
+    if promoted_from_event_ids is not None:
+        if not isinstance(promoted_from_event_ids, Sequence) or isinstance(
+            promoted_from_event_ids, (str, bytes)
+        ):
+            raise ValueError("promoted_from_event_ids must be an array when provided")
+        for item in promoted_from_event_ids:
+            _as_uuid(item, field_name="promoted_from_event_ids[]")
+
+    target_memory_id = data.get("target_memory_id")
+    if target_memory_id is not None:
+        _as_uuid(target_memory_id, field_name="target_memory_id")
+
+    edge_weight = data.get("edge_weight")
+    if edge_weight is not None:
+        if not isinstance(edge_weight, (int, float)):
+            raise ValueError("edge_weight must be a number when provided")
+        if float(edge_weight) < 0:
+            raise ValueError("edge_weight must be >= 0 when provided")
+
+    edge_reason = data.get("edge_reason")
+    if edge_reason is not None:
+        _require_non_empty_string(edge_reason, field_name="edge_reason")
 
     evidence_refs = data.get("evidence_refs")
     if evidence_refs is not None:
@@ -421,3 +490,29 @@ def validate_event_envelope(data: Mapping[str, Any]) -> None:
     if event_type == "imported":
         if evidence_refs is None or len(evidence_refs) == 0:
             raise ValueError("imported events must include at least one evidence_ref")
+    if event_type == "promoted":
+        if memory_class != "semantic":
+            raise ValueError("promoted events must set memory_class to semantic")
+        if payload is None:
+            raise ValueError("promoted events must include payload")
+        if not promoted_from_memory_ids or not promoted_from_event_ids:
+            raise ValueError(
+                "promoted events must include promoted_from_memory_ids and promoted_from_event_ids"
+            )
+        if len(promoted_from_memory_ids) != len(promoted_from_event_ids):
+            raise ValueError(
+                "promoted_from_memory_ids and promoted_from_event_ids must have the same length"
+            )
+        if list(previous_events) != list(promoted_from_event_ids):
+            raise ValueError(
+                "promoted events must use promoted_from_event_ids as previous_events"
+            )
+    if event_type == "linked":
+        if target_memory_id is None:
+            raise ValueError("linked events must include target_memory_id")
+    if event_type == "conflicted":
+        if target_memory_id is None:
+            raise ValueError("conflicted events must include target_memory_id")
+    if event_type == "reinforced" and target_memory_id is None and edge_reason is None:
+        # Keep the event small but still attributable when reinforcing without an edge.
+        pass

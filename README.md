@@ -49,9 +49,14 @@ Example endpoints:
 - `POST /ingest/event`
 - `POST /ingest/import`
 - `POST /query`
+- `POST /link`
+- `POST /reinforce`
+- `POST /conflict`
 - `POST /memory/{memory_id}/peek`
+- `POST /memory/{memory_id}/assess-promotion`
 - `POST /memory/{memory_id}/recall`
 - `POST /memory/{memory_id}/reconsolidate`
+- `POST /promote`
 - `GET /memory/{memory_id}/explain`
 - `POST /export/snapshot`
 - `POST /export/provenance`
@@ -86,10 +91,34 @@ python3 -m agentic_memory_fabric.cli --state-file .amf-state.json query \
   --query-text "memory fabric" \
   --structured-filter-json '{"queryable_payload_present": true}'
 
+python3 -m agentic_memory_fabric.cli --state-file .amf-state.json link \
+  --tenant-id tenant-alpha \
+  --keyring-json '{"dev-key":{"key":"super-secret","status":"active"}}' \
+  --source-memory-id aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa \
+  --target-memory-id bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb \
+  --actor-json '{"id":"svc-memory","kind":"service"}'
+
+python3 -m agentic_memory_fabric.cli --state-file .amf-state.json query \
+  --tenant-id tenant-alpha \
+  --keyring-json '{"dev-key":{"key":"super-secret","status":"active"}}' \
+  --query-text "memory fabric" \
+  --graph-expand
+
 python3 -m agentic_memory_fabric.cli --state-file .amf-state.json recall \
   --tenant-id tenant-alpha \
   --memory-id aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa \
   --actor-json '{"id":"svc-memory","kind":"service"}'
+
+python3 -m agentic_memory_fabric.cli --state-file .amf-state.json assess-promotion \
+  --tenant-id tenant-alpha \
+  --memory-id aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
+
+python3 -m agentic_memory_fabric.cli --state-file .amf-state.json promote \
+  --tenant-id tenant-alpha \
+  --capabilities-json '["override_retrieval_denials"]' \
+  --memory-ids-json '["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]' \
+  --actor-json '{"id":"auditor","kind":"service"}' \
+  --payload-json '{"topic":"semantic memory fabric"}'
 ```
 
 `query` stays backward-compatible. If `query_text` is omitted, AMF returns the inventory-style listing over the current sound set. If `query_text` is present, AMF searches only current heads whose governed inline payloads can materialize `retrieval_text`, then re-checks normal retrieval policy before returning each hit.
@@ -111,6 +140,37 @@ Semantic query records include:
 - `retrieval_mode`
 - `indexed_event_id`
 - `queryable_payload_present`
+
+## Scored Memory Graph and Conflict-Aware Retrieval
+
+AMF now supports governed one-hop graph edges between memories through append-only `linked`, `reinforced`, and `conflicted` events. These edges stay in lineage; they are not stored in a mutable side table.
+
+Replay, retrieval, and snapshot records now include:
+
+- `reinforcement_score`
+- `conflict_score`
+- `related_memory_ids`
+- `conflicted_memory_ids`
+
+When `query_text` is present, `query` combines lexical score with recency, reinforcement, and conflict penalty. Graph expansion is opt-in through `graph_expand`; when enabled, AMF returns direct matches first and then eligible one-hop neighbors, while still re-running normal retrieval policy on every expanded candidate.
+
+Structured filters now also support:
+
+- `min_reinforcement_score`
+- `max_conflict_score`
+
+## Explicit Memory Classes and Promotion
+
+AMF now distinguishes `episodic` and `semantic` memories explicitly. Legacy memories replay as `episodic` by default. Promotion is an explicit control-plane operation that creates a new semantic memory with provenance links back to the source episodic memories; it does not mutate the source memory into a different class and it does not trigger model training.
+
+Retrieval and snapshot records now include:
+
+- `memory_class`
+- `promotion_score`
+- `promotion_eligible`
+- `promoted_from_memory_ids`
+
+Use `assess-promotion` to score and gate a source memory under current policy, and `promote` to append a new semantic candidate memory with caller-supplied payload.
 
 ### CLI walkthrough scripts
 
@@ -140,8 +200,13 @@ Current event types include:
 - `memory.query`
 - `memory.get`
 - `memory.peek`
+- `memory.link`
+- `memory.reinforce`
+- `memory.conflict`
+- `memory.assess_promotion`
 - `memory.recall`
 - `memory.reconsolidate`
+- `memory.promote`
 - `memory.explain`
 - `memory.export.snapshot`
 - `memory.export.provenance`

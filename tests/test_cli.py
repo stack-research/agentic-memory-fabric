@@ -28,6 +28,8 @@ class CliTests(unittest.TestCase):
         previous_events: list[str] | None = None,
         attestation: dict | None = None,
         payload: object | None = None,
+        memory_id: str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        memory_class: str | None = None,
     ) -> str:
         if previous_events is None:
             previous_events = []
@@ -43,10 +45,11 @@ class CliTests(unittest.TestCase):
                 "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": sequence},
                 "actor": {"id": "svc-memory", "kind": "service"},
                 "tenant_id": "tenant-alpha",
-                "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "memory_id": memory_id,
                 "event_type": event_type,
                 "previous_events": previous_events,
                 "payload_hash": payload_hash,
+                **({"memory_class": memory_class} if memory_class is not None else {}),
                 **({"payload": payload} if payload is not None else {}),
             }
         )
@@ -646,6 +649,120 @@ class CliTests(unittest.TestCase):
             self.assertEqual(payload["records"][0]["retrieval_mode"], "lexical_v1")
             self.assertGreater(payload["records"][0]["retrieval_score"], 0.0)
 
+    def test_cli_graph_commands_and_query_expansion(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = str(pathlib.Path(tmpdir) / "state.json")
+            keyring_json = '{"dev-key":{"key":"super-secret","status":"active"}}'
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "ingest-event",
+                    "--event-json",
+                    self._signed_event_json(
+                        payload={"topic": "alpha memory"},
+                        memory_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    ),
+                ],
+                stdout=io.StringIO(),
+            )
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "ingest-event",
+                    "--event-json",
+                    self._signed_event_json(
+                        sequence=2,
+                        event_id="22222222-2222-4222-8222-222222222222",
+                        payload={"topic": "bravo neighbor"},
+                        memory_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    ),
+                ],
+                stdout=io.StringIO(),
+            )
+            out_link = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "link",
+                    "--source-memory-id",
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "--target-memory-id",
+                    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    "--actor-json",
+                    '{"id":"svc-memory","kind":"service"}',
+                    "--event-id",
+                    "33333333-3333-4333-8333-333333333333",
+                    "--timestamp-json",
+                    '{"wall_time":"2026-03-22T00:00:00Z","tick":3}',
+                ],
+                stdout=out_link,
+            )
+            link_payload = json.loads(out_link.getvalue())
+            self.assertEqual(link_payload["event"]["event_type"], "linked")
+            out_reinforce = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "reinforce",
+                    "--memory-id",
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "--related-memory-id",
+                    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    "--actor-json",
+                    '{"id":"svc-memory","kind":"service"}',
+                    "--event-id",
+                    "44444444-4444-4444-8444-444444444444",
+                    "--timestamp-json",
+                    '{"wall_time":"2026-03-22T00:00:00Z","tick":4}',
+                    "--edge-weight",
+                    "2.0",
+                ],
+                stdout=out_reinforce,
+            )
+            reinforce_payload = json.loads(out_reinforce.getvalue())
+            self.assertEqual(reinforce_payload["record"]["reinforcement_score"], 2.0)
+            out_query = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "query",
+                    "--query-text",
+                    "alpha",
+                    "--graph-expand",
+                ],
+                stdout=out_query,
+            )
+            payload = json.loads(out_query.getvalue())
+            self.assertEqual(payload["count"], 2)
+            self.assertEqual(payload["records"][0]["memory_id"], "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+            self.assertEqual(payload["records"][1]["memory_id"], "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
+            self.assertEqual(payload["records"][1]["retrieval_mode"], "graph_expand_v1")
+
     def test_cli_semantic_query_over_imported_payloads(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             state_file = str(pathlib.Path(tmpdir) / "state.json")
@@ -778,6 +895,125 @@ class CliTests(unittest.TestCase):
             self.assertEqual(recon_payload["outcome"], "appended")
             self.assertEqual(recon_payload["record"]["version"], 2)
             self.assertEqual(recon_payload["record"]["reconsolidation_count"], 1)
+
+    def test_cli_assess_promotion_and_promote(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = str(pathlib.Path(tmpdir) / "state.json")
+            keyring_json = '{"dev-key":{"key":"super-secret","status":"active"}}'
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "ingest-event",
+                    "--event-json",
+                    self._signed_event_json(payload={"topic": "episodic alpha"}),
+                ],
+                stdout=io.StringIO(),
+            )
+
+            out_assess = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "assess-promotion",
+                    "--memory-id",
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                ],
+                stdout=out_assess,
+            )
+            assess_payload = json.loads(out_assess.getvalue())
+            self.assertTrue(assess_payload["promotion_eligible"])
+            self.assertEqual(assess_payload["memory_class"], "episodic")
+
+            out_promote = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "--capabilities-json",
+                    '["override_retrieval_denials"]',
+                    "promote",
+                    "--memory-ids-json",
+                    '["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]',
+                    "--actor-json",
+                    '{"id":"auditor","kind":"service"}',
+                    "--payload-json",
+                    '{"topic":"semantic alpha"}',
+                    "--promoted-memory-id",
+                    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    "--event-id",
+                    "22222222-2222-4222-8222-222222222222",
+                    "--timestamp-json",
+                    '{"wall_time":"2026-03-22T00:00:00Z","tick":2}',
+                ],
+                stdout=out_promote,
+            )
+            promote_payload = json.loads(out_promote.getvalue())
+            self.assertEqual(promote_payload["outcome"], "appended")
+            self.assertEqual(promote_payload["event"]["event_type"], "promoted")
+            self.assertEqual(promote_payload["event"]["memory_class"], "semantic")
+
+    def test_cli_promote_denies_untrusted_source(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = str(pathlib.Path(tmpdir) / "state.json")
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "import-records",
+                    "--records-json",
+                    '[{"memory_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","payload":{"topic":"unsigned source"},"source_id":"seed-1"}]',
+                    "--actor-json",
+                    '{"id":"migration-bot","kind":"service"}',
+                    "--default-timestamp",
+                    "2026-03-22T00:00:00Z",
+                ],
+                stdout=io.StringIO(),
+            )
+            out_promote = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "promote",
+                    "--memory-ids-json",
+                    '["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]',
+                    "--actor-json",
+                    '{"id":"svc-memory","kind":"service"}',
+                    "--payload-json",
+                    '{"topic":"semantic denied"}',
+                    "--promoted-memory-id",
+                    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    "--event-id",
+                    "22222222-2222-4222-8222-222222222222",
+                    "--timestamp-json",
+                    '{"wall_time":"2026-03-22T00:00:00Z","tick":2}',
+                ],
+                stdout=out_promote,
+            )
+            promote_payload = json.loads(out_promote.getvalue())
+            self.assertEqual(promote_payload["outcome"], "denied")
+            self.assertIn(
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                promote_payload["source_denials"],
+            )
 
     def test_cli_ed25519_signed_ingest_with_jwk_keyring(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

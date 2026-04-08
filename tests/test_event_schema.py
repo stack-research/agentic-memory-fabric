@@ -32,6 +32,8 @@ class EventSchemaTests(unittest.TestCase):
             "event-envelope.v0.json",
             "event-envelope.v1.json",
             "event-envelope.v2.json",
+            "event-envelope.v3.json",
+            "event-envelope.v4.json",
         ):
             schema_path = PROJECT_ROOT / "schemas" / schema_name
             schema = json.loads(schema_path.read_text(encoding="utf-8"))
@@ -62,6 +64,18 @@ class EventSchemaTests(unittest.TestCase):
                 self.assertIn("reconsolidated", event_types)
             if schema_name.endswith("v2.json"):
                 self.assertIn("payload", schema["properties"])
+            if schema_name.endswith("v3.json"):
+                self.assertIn("memory_class", schema["properties"])
+                self.assertIn("promoted", event_types)
+                self.assertIn("promoted_from_memory_ids", schema["properties"])
+                self.assertIn("promoted_from_event_ids", schema["properties"])
+            if schema_name.endswith("v4.json"):
+                self.assertIn("linked", event_types)
+                self.assertIn("reinforced", event_types)
+                self.assertIn("conflicted", event_types)
+                self.assertIn("target_memory_id", schema["properties"])
+                self.assertIn("edge_weight", schema["properties"])
+                self.assertIn("edge_reason", schema["properties"])
             self.assertIn("signature", schema["properties"])
             self.assertIn("attestation", schema["properties"])
             self.assertIn("ed25519", schema["properties"]["signature"]["properties"]["alg"]["enum"])
@@ -115,6 +129,36 @@ class EventSchemaTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "canonical hash of payload"):
             validate_event_envelope(event)
 
+    def test_validate_event_envelope_accepts_promoted_event_shape(self) -> None:
+        payload = {"topic": "semantic-alpha"}
+        event = {
+            **_valid_event(),
+            "memory_id": "55555555-5555-4555-8555-555555555555",
+            "event_type": "promoted",
+            "memory_class": "semantic",
+            "payload": payload,
+            "payload_hash": canonical_payload_hash(payload),
+            "previous_events": ["33333333-3333-4333-8333-333333333333"],
+            "promoted_from_memory_ids": ["22222222-2222-4222-8222-222222222222"],
+            "promoted_from_event_ids": ["33333333-3333-4333-8333-333333333333"],
+        }
+        validate_event_envelope(event)
+
+    def test_validate_event_envelope_rejects_promoted_event_without_semantic_class(self) -> None:
+        payload = {"topic": "semantic-alpha"}
+        event = {
+            **_valid_event(),
+            "memory_id": "55555555-5555-4555-8555-555555555555",
+            "event_type": "promoted",
+            "payload": payload,
+            "payload_hash": canonical_payload_hash(payload),
+            "previous_events": ["33333333-3333-4333-8333-333333333333"],
+            "promoted_from_memory_ids": ["22222222-2222-4222-8222-222222222222"],
+            "promoted_from_event_ids": ["33333333-3333-4333-8333-333333333333"],
+        }
+        with self.assertRaisesRegex(ValueError, "memory_class"):
+            validate_event_envelope(event)
+
     def test_validate_event_envelope_rejects_invalid_signature_algorithm(self) -> None:
         event = _valid_event()
         event["signature"] = {
@@ -123,4 +167,24 @@ class EventSchemaTests(unittest.TestCase):
             "sig": "YWJjZA==",
         }
         with self.assertRaisesRegex(ValueError, "signature.alg"):
+            validate_event_envelope(event)
+
+    def test_validate_event_envelope_accepts_graph_edge_event(self) -> None:
+        event = {
+            **_valid_event(),
+            "event_type": "linked",
+            "previous_events": ["33333333-3333-4333-8333-333333333333"],
+            "target_memory_id": "44444444-4444-4444-8444-444444444444",
+            "edge_weight": 1.5,
+            "edge_reason": "semantic-neighbor",
+        }
+        validate_event_envelope(event)
+
+    def test_validate_event_envelope_rejects_link_without_target(self) -> None:
+        event = {
+            **_valid_event(),
+            "event_type": "linked",
+            "previous_events": ["33333333-3333-4333-8333-333333333333"],
+        }
+        with self.assertRaisesRegex(ValueError, "target_memory_id"):
             validate_event_envelope(event)

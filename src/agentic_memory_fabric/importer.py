@@ -90,6 +90,8 @@ def import_records(
         }
         if "payload" in record:
             event_data["payload"] = payload
+        if "memory_class" in record:
+            event_data["memory_class"] = record["memory_class"]
         if "trust_transition" in record:
             event_data["trust_transition"] = record["trust_transition"]
         if "signature" in record:

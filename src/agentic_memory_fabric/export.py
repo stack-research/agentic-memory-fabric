@@ -20,6 +20,7 @@ def export_sbom_snapshot(
         {
             "memory_id": record.memory_id,
             "tenant_id": record.tenant_id,
+            "memory_class": record.memory_class,
             "trust_state": record.trust_state,
             "version": record.version,
             "last_event_id": record.last_event_id,
@@ -33,6 +34,13 @@ def export_sbom_snapshot(
             "last_recall_tick": record.last_recall_tick,
             "last_write_tick": record.last_write_tick,
             "queryable_payload_present": record.queryable_payload_present,
+            "promotion_score": record.promotion_score,
+            "promotion_eligible": record.promotion_eligible,
+            "promoted_from_memory_ids": list(record.promoted_from_memory_ids),
+            "reinforcement_score": record.reinforcement_score,
+            "conflict_score": record.conflict_score,
+            "related_memory_ids": list(record.related_memory_ids),
+            "conflicted_memory_ids": list(record.conflicted_memory_ids),
             "denial_reason": record.denial_reason,
             "override_used": record.override_used,
         }

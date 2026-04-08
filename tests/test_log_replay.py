@@ -22,6 +22,13 @@ def _event(
     evidence_refs: list[dict] | None = None,
     attestation: dict | None = None,
     payload: object | None = None,
+    memory_id: str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    memory_class: str | None = None,
+    promoted_from_memory_ids: list[str] | None = None,
+    promoted_from_event_ids: list[str] | None = None,
+    target_memory_id: str | None = None,
+    edge_weight: float | None = None,
+    edge_reason: str | None = None,
 ) -> EventEnvelope:
     if payload is None:
         payload_char = format(sequence % 16, "x")
@@ -34,13 +41,25 @@ def _event(
         "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": sequence},
         "actor": {"id": "svc-memory", "kind": "service"},
         "tenant_id": "tenant-alpha",
-        "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "memory_id": memory_id,
         "event_type": event_type,
         "previous_events": previous_events,
         "payload_hash": payload_hash,
     }
     if payload is not None:
         event_data["payload"] = payload
+    if memory_class is not None:
+        event_data["memory_class"] = memory_class
+    if promoted_from_memory_ids is not None:
+        event_data["promoted_from_memory_ids"] = promoted_from_memory_ids
+    if promoted_from_event_ids is not None:
+        event_data["promoted_from_event_ids"] = promoted_from_event_ids
+    if target_memory_id is not None:
+        event_data["target_memory_id"] = target_memory_id
+    if edge_weight is not None:
+        event_data["edge_weight"] = edge_weight
+    if edge_reason is not None:
+        event_data["edge_reason"] = edge_reason
     if evidence_refs is not None:
         event_data["evidence_refs"] = evidence_refs
     if attestation is not None:
@@ -130,6 +149,7 @@ class LogReplayTests(unittest.TestCase):
         self.assertEqual(state.trust_state, "trusted")
         self.assertEqual(state.last_event_type, "imported")
         self.assertEqual(state.version, 1)
+        self.assertEqual(state.memory_class, "episodic")
 
     def test_sqlite_log_persists_events_and_signature_state_across_restart(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -249,6 +269,61 @@ class LogReplayTests(unittest.TestCase):
             finally:
                 log.close()
 
+    def test_graph_events_materialize_graph_state(self) -> None:
+        source = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        target = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        source_created = _event(
+            1,
+            "11111111-1111-4111-8111-111111111111",
+            "created",
+            [],
+            payload={"topic": "alpha"},
+            memory_id=source,
+        )
+        target_created = _event(
+            2,
+            "22222222-2222-4222-8222-222222222222",
+            "created",
+            [],
+            payload={"topic": "beta"},
+            memory_id=target,
+        )
+        linked = _event(
+            3,
+            "33333333-3333-4333-8333-333333333333",
+            "linked",
+            [source_created.event_id],
+            memory_id=source,
+            target_memory_id=target,
+            payload={"topic": "alpha"},
+        )
+        reinforced = _event(
+            4,
+            "44444444-4444-4444-8444-444444444444",
+            "reinforced",
+            [linked.event_id],
+            memory_id=source,
+            target_memory_id=target,
+            edge_weight=2.0,
+            payload={"topic": "alpha"},
+        )
+        conflicted = _event(
+            5,
+            "55555555-5555-4555-8555-555555555555",
+            "conflicted",
+            [reinforced.event_id],
+            memory_id=source,
+            target_memory_id=target,
+            edge_weight=1.5,
+            payload={"topic": "alpha"},
+        )
+        state = replay_events([source_created, target_created, linked, reinforced, conflicted])[source]
+        self.assertEqual(state.related_memory_ids, (target,))
+        self.assertEqual(state.conflicted_memory_ids, (target,))
+        self.assertEqual(state.relationship_edges, ((target, "linked"), (target, "reinforced"), (target, "conflicted")))
+        self.assertEqual(state.reinforcement_score, 2.0)
+        self.assertEqual(state.conflict_score, 1.5)
+
     def test_replay_materializes_attestation_fields(self) -> None:
         attested = _event(
             1,
@@ -315,6 +390,32 @@ class LogReplayTests(unittest.TestCase):
         self.assertEqual(state.payload, {"topic": "beta"})
         self.assertEqual(state.retrieval_text, '{"topic":"beta"}')
         self.assertTrue(state.queryable_payload_present)
+
+    def test_replay_materializes_promoted_semantic_memory(self) -> None:
+        source = _event(
+            1,
+            "11111111-1111-4111-8111-111111111111",
+            "created",
+            [],
+            payload={"topic": "episodic-alpha"},
+        )
+        promoted = _event(
+            2,
+            "22222222-2222-4222-8222-222222222222",
+            "promoted",
+            [source.event_id],
+            memory_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            memory_class="semantic",
+            payload={"topic": "semantic-alpha"},
+            promoted_from_memory_ids=[source.memory_id],
+            promoted_from_event_ids=[source.event_id],
+        )
+        state_map = replay_events([source, promoted])
+        promoted_state = state_map["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]
+        self.assertEqual(promoted_state.memory_class, "semantic")
+        self.assertEqual(promoted_state.promoted_from_memory_ids, (source.memory_id,))
+        self.assertFalse(promoted_state.promotion_eligible)
+        self.assertEqual(promoted_state.version, 1)
 
     def test_sqlite_log_enforces_invariants_after_reopen(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

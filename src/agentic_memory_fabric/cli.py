@@ -116,9 +116,15 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
     p_query.add_argument("--structured-filter-json", default=None)
     p_query.add_argument("--trust-states-json", default="null")
     p_query.add_argument("--limit", type=int, default=None)
+    p_query.add_argument("--graph-expand", action="store_true")
+    p_query.add_argument("--graph-edge-kinds-json", default=None)
 
     p_peek = sub.add_parser("peek")
     p_peek.add_argument("--memory-id", required=True)
+
+    p_assess = sub.add_parser("assess-promotion")
+    p_assess.add_argument("--memory-id", required=True)
+    p_assess.add_argument("--policy-json", default="{}")
 
     p_recall = sub.add_parser("recall")
     p_recall.add_argument("--memory-id", required=True)
@@ -137,6 +143,46 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
     p_reconsolidate.add_argument("--payload-json", default=None)
     p_reconsolidate.add_argument("--signature-json", default=None)
     p_reconsolidate.add_argument("--attestation-json", default=None)
+
+    p_link = sub.add_parser("link")
+    p_link.add_argument("--source-memory-id", required=True)
+    p_link.add_argument("--target-memory-id", required=True)
+    p_link.add_argument("--actor-json", required=True)
+    p_link.add_argument("--event-id", default=None)
+    p_link.add_argument("--timestamp-json", default=None)
+    p_link.add_argument("--evidence-refs-json", default=None)
+    p_link.add_argument("--edge-weight", type=float, default=None)
+    p_link.add_argument("--edge-reason", default=None)
+
+    p_reinforce = sub.add_parser("reinforce")
+    p_reinforce.add_argument("--memory-id", required=True)
+    p_reinforce.add_argument("--related-memory-id", default=None)
+    p_reinforce.add_argument("--actor-json", required=True)
+    p_reinforce.add_argument("--event-id", default=None)
+    p_reinforce.add_argument("--timestamp-json", default=None)
+    p_reinforce.add_argument("--evidence-refs-json", default=None)
+    p_reinforce.add_argument("--edge-weight", type=float, default=None)
+    p_reinforce.add_argument("--edge-reason", default=None)
+
+    p_conflict = sub.add_parser("conflict")
+    p_conflict.add_argument("--source-memory-id", required=True)
+    p_conflict.add_argument("--target-memory-id", required=True)
+    p_conflict.add_argument("--actor-json", required=True)
+    p_conflict.add_argument("--event-id", default=None)
+    p_conflict.add_argument("--timestamp-json", default=None)
+    p_conflict.add_argument("--evidence-refs-json", default=None)
+    p_conflict.add_argument("--edge-weight", type=float, default=None)
+    p_conflict.add_argument("--edge-reason", default=None)
+
+    p_promote = sub.add_parser("promote")
+    p_promote.add_argument("--memory-ids-json", required=True)
+    p_promote.add_argument("--actor-json", required=True)
+    p_promote.add_argument("--payload-json", required=True)
+    p_promote.add_argument("--policy-json", default="{}")
+    p_promote.add_argument("--promoted-memory-id", default=None)
+    p_promote.add_argument("--event-id", default=None)
+    p_promote.add_argument("--timestamp-json", default=None)
+    p_promote.add_argument("--evidence-refs-json", default=None)
 
     p_explain = sub.add_parser("explain")
     p_explain.add_argument("--memory-id", required=True)
@@ -220,6 +266,12 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
                 ),
                 trust_states=set(trust_states_raw) if trust_states_raw is not None else None,
                 limit=args.limit,
+                graph_expand=args.graph_expand,
+                graph_edge_kinds=(
+                    _load_json_arg(args.graph_edge_kinds_json)
+                    if args.graph_edge_kinds_json is not None
+                    else None
+                ),
             )
             out.write(json.dumps(result, sort_keys=True) + "\n")
             return 0
@@ -233,6 +285,19 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
             out.write(
                 json.dumps({"memory_id": args.memory_id, "record": record}, sort_keys=True) + "\n"
             )
+            return 0
+
+        if args.command == "assess-promotion":
+            policy_context = _load_json_arg(args.policy_json)
+            if not isinstance(policy_context, dict):
+                raise ValueError("--policy-json must decode to a JSON object")
+            policy_context["tenant_id"] = args.tenant_id
+            assessment = runtime.assess_promotion(
+                args.memory_id,
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+            )
+            out.write(json.dumps(assessment, sort_keys=True) + "\n")
             return 0
 
         if args.command == "recall":
@@ -287,6 +352,105 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
             if state_path is not None and result["outcome"] == "appended":
                 _save_state(state_path, runtime)
             out.write(json.dumps({"memory_id": args.memory_id, **result}, sort_keys=True) + "\n")
+            return 0
+
+        if args.command == "link":
+            result = runtime.link(
+                args.source_memory_id,
+                args.target_memory_id,
+                actor=_load_json_arg(args.actor_json),
+                policy_context={"tenant_id": args.tenant_id},
+                trusted_context=trusted_context,
+                event_id=args.event_id,
+                timestamp=(
+                    _load_json_arg(args.timestamp_json) if args.timestamp_json is not None else None
+                ),
+                evidence_refs=(
+                    _load_json_arg(args.evidence_refs_json)
+                    if args.evidence_refs_json is not None
+                    else None
+                ),
+                edge_weight=args.edge_weight,
+                edge_reason=args.edge_reason,
+            )
+            if state_path is not None and result["outcome"] == "appended":
+                _save_state(state_path, runtime)
+            out.write(json.dumps(result, sort_keys=True) + "\n")
+            return 0
+
+        if args.command == "reinforce":
+            result = runtime.reinforce(
+                args.memory_id,
+                actor=_load_json_arg(args.actor_json),
+                related_memory_id=args.related_memory_id,
+                policy_context={"tenant_id": args.tenant_id},
+                trusted_context=trusted_context,
+                event_id=args.event_id,
+                timestamp=(
+                    _load_json_arg(args.timestamp_json) if args.timestamp_json is not None else None
+                ),
+                evidence_refs=(
+                    _load_json_arg(args.evidence_refs_json)
+                    if args.evidence_refs_json is not None
+                    else None
+                ),
+                edge_weight=args.edge_weight,
+                edge_reason=args.edge_reason,
+            )
+            if state_path is not None and result["outcome"] == "appended":
+                _save_state(state_path, runtime)
+            out.write(json.dumps(result, sort_keys=True) + "\n")
+            return 0
+
+        if args.command == "conflict":
+            result = runtime.conflict(
+                args.source_memory_id,
+                args.target_memory_id,
+                actor=_load_json_arg(args.actor_json),
+                policy_context={"tenant_id": args.tenant_id},
+                trusted_context=trusted_context,
+                event_id=args.event_id,
+                timestamp=(
+                    _load_json_arg(args.timestamp_json) if args.timestamp_json is not None else None
+                ),
+                evidence_refs=(
+                    _load_json_arg(args.evidence_refs_json)
+                    if args.evidence_refs_json is not None
+                    else None
+                ),
+                edge_weight=args.edge_weight,
+                edge_reason=args.edge_reason,
+            )
+            if state_path is not None and result["outcome"] == "appended":
+                _save_state(state_path, runtime)
+            out.write(json.dumps(result, sort_keys=True) + "\n")
+            return 0
+
+        if args.command == "promote":
+            policy_context = _load_json_arg(args.policy_json)
+            if not isinstance(policy_context, dict):
+                raise ValueError("--policy-json must decode to a JSON object")
+            policy_context["tenant_id"] = args.tenant_id
+            result = runtime.promote(
+                _load_json_arg(args.memory_ids_json),
+                actor=_load_json_arg(args.actor_json),
+                payload=_load_json_arg(args.payload_json),
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+                promoted_memory_id=args.promoted_memory_id,
+                event_id=args.event_id,
+                timestamp=(
+                    _load_json_arg(args.timestamp_json) if args.timestamp_json is not None else None
+                ),
+                evidence_refs=(
+                    _load_json_arg(args.evidence_refs_json)
+                    if args.evidence_refs_json is not None
+                    else None
+                ),
+            )
+            if state_path is not None and result["outcome"] == "appended":
+                _save_state(state_path, runtime)
+            out.write(json.dumps(result, sort_keys=True) + "\n")
             return 0
 
         if args.command == "explain":

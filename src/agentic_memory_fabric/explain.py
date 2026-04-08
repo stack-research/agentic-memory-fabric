@@ -34,6 +34,18 @@ def explain(
             "previous_events": list(event.previous_events),
             "timestamp": event.timestamp.to_dict(),
         }
+        if event.memory_class is not None:
+            entry["memory_class"] = event.memory_class
+        if event.promoted_from_memory_ids:
+            entry["promoted_from_memory_ids"] = list(event.promoted_from_memory_ids)
+        if event.promoted_from_event_ids:
+            entry["promoted_from_event_ids"] = list(event.promoted_from_event_ids)
+        if event.target_memory_id is not None:
+            entry["target_memory_id"] = event.target_memory_id
+        if event.edge_weight is not None:
+            entry["edge_weight"] = event.edge_weight
+        if event.edge_reason is not None:
+            entry["edge_reason"] = event.edge_reason
         if event.trust_transition is not None:
             entry["trust_transition"] = event.trust_transition.to_dict()
         trace.append(entry)

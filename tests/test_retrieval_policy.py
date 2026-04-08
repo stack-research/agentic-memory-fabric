@@ -112,6 +112,9 @@ class RetrievalPolicyTests(unittest.TestCase):
         self.assertEqual(record.version, 2)
         self.assertEqual(record.last_event_id, "11111111-1111-4111-8111-111111111111")
         self.assertEqual(record.why_sound, "trusted_active_under_policy")
+        self.assertEqual(record.lineage_depth, 0)
+        self.assertEqual(record.recall_count, 0)
+        self.assertIsNone(record.last_recall_tick)
 
     def test_get_default_denies_quarantined_expired_and_deleted(self) -> None:
         state_map = self._state_map()

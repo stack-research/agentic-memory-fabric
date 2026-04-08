@@ -85,11 +85,12 @@ class LogReplayTests(unittest.TestCase):
         self.assertEqual(state_once, state_twice)
 
         state = state_once["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]
-        self.assertEqual(state.version, 5)
+        self.assertEqual(state.version, 2)
         self.assertEqual(state.last_event_type, "deleted")
         self.assertEqual(state.last_event_id, e5.event_id)
         self.assertEqual(state.lifecycle_state, LIFECYCLE_DELETED)
         self.assertEqual(state.previous_events, (e4.event_id,))
+        self.assertEqual(state.lineage_depth, 5)
 
     def test_state_transition_across_core_event_types(self) -> None:
         e1 = _event(1, "11111111-1111-4111-8111-111111111111", "created", [])
@@ -122,6 +123,7 @@ class LogReplayTests(unittest.TestCase):
         state = replay_events([imported])["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]
         self.assertEqual(state.trust_state, "trusted")
         self.assertEqual(state.last_event_type, "imported")
+        self.assertEqual(state.version, 1)
 
     def test_sqlite_log_persists_events_and_signature_state_across_restart(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -258,6 +260,45 @@ class LogReplayTests(unittest.TestCase):
         self.assertTrue(state.has_attestation)
         self.assertEqual(state.attestation_issuer, "issuer-alpha")
         self.assertEqual(state.attestation_trust_level, "high")
+
+    def test_replay_tracks_recall_and_reconsolidation_dynamics(self) -> None:
+        created = _event(1, "11111111-1111-4111-8111-111111111111", "created", [])
+        recalled = EventEnvelope.from_dict(
+            {
+                "event_id": "22222222-2222-4222-8222-222222222222",
+                "sequence": 2,
+                "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 20},
+                "actor": {"id": "svc-memory", "kind": "service"},
+                "tenant_id": "tenant-alpha",
+                "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "event_type": "recalled",
+                "previous_events": [created.event_id],
+                "payload_hash": created.payload_hash,
+            }
+        )
+        reconsolidated = EventEnvelope.from_dict(
+            {
+                "event_id": "33333333-3333-4333-8333-333333333333",
+                "sequence": 3,
+                "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 30},
+                "actor": {"id": "svc-memory", "kind": "service"},
+                "tenant_id": "tenant-alpha",
+                "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "event_type": "reconsolidated",
+                "previous_events": [recalled.event_id],
+                "payload_hash": "sha256:" + ("f" * 64),
+            }
+        )
+        state = replay_events([created, recalled, reconsolidated])[
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        ]
+        self.assertEqual(state.version, 2)
+        self.assertEqual(state.lineage_depth, 3)
+        self.assertEqual(state.recall_count, 1)
+        self.assertEqual(state.reconsolidation_count, 1)
+        self.assertEqual(state.last_access_tick, 30)
+        self.assertEqual(state.last_recall_tick, 30)
+        self.assertEqual(state.last_write_tick, 30)
 
     def test_sqlite_log_enforces_invariants_after_reopen(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

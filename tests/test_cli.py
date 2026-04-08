@@ -520,6 +520,97 @@ class CliTests(unittest.TestCase):
                 "attestation_issuer_default_deny",
             )
 
+    def test_cli_peek_recall_and_reconsolidate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = str(pathlib.Path(tmpdir) / "state.json")
+            keyring_json = '{"dev-key":{"key":"super-secret","status":"active"}}'
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "ingest-event",
+                    "--event-json",
+                    self._signed_event_json(),
+                ],
+                stdout=io.StringIO(),
+            )
+
+            out_peek = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "peek",
+                    "--memory-id",
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                ],
+                stdout=out_peek,
+            )
+            peek_payload = json.loads(out_peek.getvalue())
+            self.assertEqual(peek_payload["record"]["version"], 1)
+
+            out_recall = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "recall",
+                    "--memory-id",
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "--actor-json",
+                    '{"id":"svc-memory","kind":"service"}',
+                    "--event-id",
+                    "22222222-2222-4222-8222-222222222222",
+                    "--timestamp-json",
+                    '{"wall_time":"2026-03-22T00:00:00Z","tick":5}',
+                ],
+                stdout=out_recall,
+            )
+            recall_payload = json.loads(out_recall.getvalue())
+            self.assertEqual(recall_payload["outcome"], "appended")
+            self.assertEqual(recall_payload["record"]["version"], 1)
+            self.assertEqual(recall_payload["record"]["recall_count"], 1)
+
+            out_recon = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "reconsolidate",
+                    "--memory-id",
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "--actor-json",
+                    '{"id":"svc-memory","kind":"service"}',
+                    "--payload-hash",
+                    "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    "--event-id",
+                    "33333333-3333-4333-8333-333333333333",
+                    "--timestamp-json",
+                    '{"wall_time":"2026-03-22T00:00:00Z","tick":6}',
+                ],
+                stdout=out_recon,
+            )
+            recon_payload = json.loads(out_recon.getvalue())
+            self.assertEqual(recon_payload["outcome"], "appended")
+            self.assertEqual(recon_payload["record"]["version"], 2)
+            self.assertEqual(recon_payload["record"]["reconsolidation_count"], 1)
+
     def test_cli_ed25519_signed_ingest_with_jwk_keyring(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             state_file = str(pathlib.Path(tmpdir) / "state.json")

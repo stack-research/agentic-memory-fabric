@@ -2,6 +2,7 @@ import pathlib
 import sys
 import tempfile
 import unittest
+import json
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SRC_ROOT = PROJECT_ROOT / "src"
@@ -148,6 +149,60 @@ class ServiceApiTests(unittest.TestCase):
         )
         self.assertEqual(status_snapshot, 200)
         self.assertEqual(payload_snapshot["count"], 1)
+
+    def test_peek_recall_and_reconsolidate_endpoints(self) -> None:
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        app = ServiceApp(runtime=runtime)
+        app.handle_request(
+            "POST",
+            "/ingest/event",
+            json.dumps({"event": self._signed_event()}).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+
+        status_peek, payload_peek = app.handle_request(
+            "POST",
+            "/memory/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/peek",
+            b"{}",
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_peek, 200)
+        self.assertEqual(payload_peek["record"]["version"], 1)
+
+        status_recall, payload_recall = app.handle_request(
+            "POST",
+            "/memory/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/recall",
+            json.dumps(
+                {
+                    "actor": {"id": "svc-memory", "kind": "service"},
+                    "event_id": "11111111-2222-4222-8222-222222222222",
+                    "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 5},
+                }
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_recall, 200)
+        self.assertEqual(payload_recall["outcome"], "appended")
+        self.assertEqual(payload_recall["record"]["version"], 1)
+        self.assertEqual(payload_recall["record"]["recall_count"], 1)
+
+        status_recon, payload_recon = app.handle_request(
+            "POST",
+            "/memory/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/reconsolidate",
+            json.dumps(
+                {
+                    "actor": {"id": "svc-memory", "kind": "service"},
+                    "payload_hash": "sha256:" + ("b" * 64),
+                    "event_id": "11111111-3333-4333-8333-333333333333",
+                    "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 6},
+                }
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_recon, 200)
+        self.assertEqual(payload_recon["outcome"], "appended")
+        self.assertEqual(payload_recon["record"]["version"], 2)
+        self.assertEqual(payload_recon["record"]["reconsolidation_count"], 1)
 
     def test_untrusted_policy_override_is_ignored(self) -> None:
         app = ServiceApp()

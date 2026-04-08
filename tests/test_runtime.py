@@ -201,3 +201,91 @@ class RuntimeReadModelTests(unittest.TestCase):
                 runtime.close()
                 if reopened is not None:
                     reopened.close()
+
+    def test_recall_appends_event_without_bumping_content_version(self) -> None:
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        runtime.ingest_event(
+            _signed_event(
+                sequence=1,
+                event_id="11111111-1111-4111-8111-111111111111",
+                event_type="created",
+                previous_events=[],
+            ),
+            expected_tenant_id="tenant-alpha",
+            trusted_context={"tenant_id": "tenant-alpha"},
+        )
+        result = runtime.recall(
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            actor={"id": "svc-memory", "kind": "service"},
+            policy_context={"tenant_id": "tenant-alpha"},
+            trusted_context={"tenant_id": "tenant-alpha"},
+            event_id="22222222-2222-4222-8222-222222222222",
+            timestamp={"wall_time": "2026-03-22T00:00:00Z", "tick": 9},
+        )
+        self.assertEqual(result["outcome"], "appended")
+        self.assertEqual(result["event"]["event_type"], "recalled")
+        self.assertEqual(result["record"]["version"], 1)
+        self.assertEqual(result["record"]["recall_count"], 1)
+        self.assertEqual(result["record"]["last_recall_tick"], 9)
+
+    def test_reconsolidate_appends_event_and_bumps_content_version(self) -> None:
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        runtime.ingest_event(
+            _signed_event(
+                sequence=1,
+                event_id="11111111-1111-4111-8111-111111111111",
+                event_type="created",
+                previous_events=[],
+            ),
+            expected_tenant_id="tenant-alpha",
+            trusted_context={"tenant_id": "tenant-alpha"},
+        )
+        result = runtime.reconsolidate(
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            actor={"id": "svc-memory", "kind": "service"},
+            payload_hash="sha256:" + ("b" * 64),
+            policy_context={"tenant_id": "tenant-alpha"},
+            trusted_context={"tenant_id": "tenant-alpha"},
+            event_id="33333333-3333-4333-8333-333333333333",
+            timestamp={"wall_time": "2026-03-22T00:00:00Z", "tick": 11},
+        )
+        self.assertEqual(result["outcome"], "appended")
+        self.assertEqual(result["event"]["event_type"], "reconsolidated")
+        self.assertEqual(result["record"]["version"], 2)
+        self.assertEqual(result["record"]["reconsolidation_count"], 1)
+        self.assertEqual(result["record"]["last_write_tick"], 11)
+
+    def test_dynamic_event_ingest_rejects_bad_head_or_payload_rules(self) -> None:
+        runtime = MemoryRuntime()
+        runtime.ingest_event(
+            _event(
+                sequence=1,
+                event_id="11111111-1111-4111-8111-111111111111",
+                event_type="created",
+                previous_events=[],
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "preserve the current payload_hash"):
+            runtime.ingest_event(
+                {
+                    **_event(
+                        sequence=2,
+                        event_id="22222222-2222-4222-8222-222222222222",
+                        event_type="recalled",
+                        previous_events=["11111111-1111-4111-8111-111111111111"],
+                    ),
+                    "payload_hash": "sha256:" + ("b" * 64),
+                }
+            )
+        with self.assertRaisesRegex(ValueError, "change the payload_hash"):
+            runtime.ingest_event(
+                {
+                    **_event(
+                        sequence=2,
+                        event_id="33333333-3333-4333-8333-333333333333",
+                        event_type="reconsolidated",
+                        previous_events=["11111111-1111-4111-8111-111111111111"],
+                    ),
+                    "payload_hash": "sha256:" + ("1" * 64),
+                }
+            )

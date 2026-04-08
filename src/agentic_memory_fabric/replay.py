@@ -7,7 +7,15 @@ from dataclasses import dataclass
 from .events import EventEnvelope
 
 
-TRUSTED_EVENT_TYPES = {"created", "updated", "released", "imported", "attested"}
+TRUSTED_EVENT_TYPES = {
+    "created",
+    "updated",
+    "released",
+    "imported",
+    "attested",
+    "reconsolidated",
+}
+CONTENT_VERSION_EVENT_TYPES = {"created", "updated", "imported", "reconsolidated"}
 LIFECYCLE_ACTIVE = "active"
 LIFECYCLE_DELETED = "deleted"
 
@@ -26,6 +34,12 @@ class MemoryState:
     last_tick: int
     payload_hash: str
     previous_events: tuple[str, ...]
+    lineage_depth: int = 0
+    recall_count: int = 0
+    reconsolidation_count: int = 0
+    last_access_tick: int | None = None
+    last_recall_tick: int | None = None
+    last_write_tick: int | None = None
     has_attestation: bool = False
     attestation_trust_level: str | None = None
     attestation_issuer: str | None = None
@@ -40,9 +54,21 @@ def replay_events(
 
     for event in events:
         existing = materialized.get(event.memory_id)
-        version = 1 if existing is None else existing.version + 1
+        version = 0 if existing is None else existing.version
         lifecycle_state = LIFECYCLE_ACTIVE if existing is None else existing.lifecycle_state
         trust_state = "trusted" if existing is None else existing.trust_state
+        lineage_depth = 0 if existing is None else existing.lineage_depth
+        recall_count = 0 if existing is None else existing.recall_count
+        reconsolidation_count = 0 if existing is None else existing.reconsolidation_count
+        last_access_tick = None if existing is None else existing.last_access_tick
+        last_recall_tick = None if existing is None else existing.last_recall_tick
+        last_write_tick = None if existing is None else existing.last_write_tick
+        current_tick = event.timestamp.tick if event.timestamp.tick is not None else event.sequence
+
+        if event.event_type in CONTENT_VERSION_EVENT_TYPES:
+            version += 1
+            last_write_tick = current_tick
+            last_access_tick = current_tick
 
         if event.event_type == "quarantined":
             trust_state = "quarantined"
@@ -56,6 +82,30 @@ def replay_events(
         if event.trust_transition is not None:
             trust_state = event.trust_transition.to
 
+        if event.event_type == "recalled":
+            recall_count += 1
+            last_access_tick = current_tick
+            last_recall_tick = current_tick
+        elif event.event_type == "reconsolidated":
+            reconsolidation_count += 1
+            last_access_tick = current_tick
+            last_recall_tick = current_tick
+
+        lineage_depth += 1
+
+        if (
+            existing is not None
+            and event.event_type in {"recalled", "reconsolidated"}
+            and event.signature is None
+        ):
+            signature_state = existing.signature_state
+        else:
+            signature_state = (
+                signature_states[event.event_id]
+                if signature_states is not None and event.event_id in signature_states
+                else ("unsigned" if event.signature is None else "invalid")
+            )
+
         materialized[event.memory_id] = MemoryState(
             memory_id=event.memory_id,
             tenant_id=event.tenant_id,
@@ -65,15 +115,17 @@ def replay_events(
             last_event_id=event.event_id,
             last_sequence=event.sequence,
             last_event_type=event.event_type,
-            signature_state=(
-                signature_states[event.event_id]
-                if signature_states is not None and event.event_id in signature_states
-                else ("unsigned" if event.signature is None else "invalid")
-            ),
+            signature_state=signature_state,
             # Prefer explicit logical tick and fall back to sequence for deterministic clocking.
-            last_tick=event.timestamp.tick if event.timestamp.tick is not None else event.sequence,
+            last_tick=current_tick,
             payload_hash=event.payload_hash,
             previous_events=event.previous_events,
+            lineage_depth=lineage_depth,
+            recall_count=recall_count,
+            reconsolidation_count=reconsolidation_count,
+            last_access_tick=last_access_tick,
+            last_recall_tick=last_recall_tick,
+            last_write_tick=last_write_tick,
             has_attestation=event.attestation is not None,
             attestation_trust_level=(
                 event.attestation.trust_level if event.attestation is not None else None

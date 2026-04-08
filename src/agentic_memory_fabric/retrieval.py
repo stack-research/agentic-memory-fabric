@@ -19,6 +19,12 @@ class RetrievalRecord:
     why_sound: str
     lifecycle_state: str
     signature_state: str
+    lineage_depth: int
+    recall_count: int
+    reconsolidation_count: int
+    last_access_tick: int | None
+    last_recall_tick: int | None
+    last_write_tick: int | None
     denial_reason: str | None
     override_used: bool
 
@@ -49,6 +55,12 @@ def _to_retrieval_record(state: MemoryState, *, why_sound: str, denial_reason: s
         why_sound=why_sound,
         lifecycle_state=state.lifecycle_state,
         signature_state=state.signature_state,
+        lineage_depth=state.lineage_depth,
+        recall_count=state.recall_count,
+        reconsolidation_count=state.reconsolidation_count,
+        last_access_tick=state.last_access_tick,
+        last_recall_tick=state.last_recall_tick,
+        last_write_tick=state.last_write_tick,
         denial_reason=denial_reason,
         override_used=override_used,
     )
@@ -89,6 +101,14 @@ def get(
 ) -> RetrievalRecord | None:
     outcome = get_outcome(memory_id, state_map, policy_context)
     return outcome.record if outcome.outcome == "allowed" else None
+
+
+def peek(
+    memory_id: str,
+    state_map: dict[str, MemoryState],
+    policy_context: PolicyContext,
+) -> RetrievalRecord | None:
+    return get(memory_id, state_map, policy_context)
 
 
 def query_with_summary(

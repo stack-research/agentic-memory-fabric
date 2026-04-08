@@ -28,33 +28,37 @@ def _valid_event() -> dict:
 
 class EventSchemaTests(unittest.TestCase):
     def test_event_schema_file_contains_required_structure(self) -> None:
-        schema_path = PROJECT_ROOT / "schemas" / "event-envelope.v0.json"
-        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        for schema_name in ("event-envelope.v0.json", "event-envelope.v1.json"):
+            schema_path = PROJECT_ROOT / "schemas" / schema_name
+            schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
-        required = set(schema["required"])
-        self.assertTrue(
-            {
-                "event_id",
-                "sequence",
-                "timestamp",
-                "actor",
-                "tenant_id",
-                "memory_id",
-                "event_type",
-                "previous_events",
-                "payload_hash",
-            }.issubset(required)
-        )
-
-        event_types = schema["properties"]["event_type"]["enum"]
-        self.assertTrue(
-            {"created", "updated", "quarantined", "expired", "deleted"}.issubset(
-                set(event_types)
+            required = set(schema["required"])
+            self.assertTrue(
+                {
+                    "event_id",
+                    "sequence",
+                    "timestamp",
+                    "actor",
+                    "tenant_id",
+                    "memory_id",
+                    "event_type",
+                    "previous_events",
+                    "payload_hash",
+                }.issubset(required)
             )
-        )
-        self.assertIn("signature", schema["properties"])
-        self.assertIn("attestation", schema["properties"])
-        self.assertIn("ed25519", schema["properties"]["signature"]["properties"]["alg"]["enum"])
+
+            event_types = set(schema["properties"]["event_type"]["enum"])
+            self.assertTrue(
+                {"created", "updated", "quarantined", "expired", "deleted"}.issubset(
+                    event_types
+                )
+            )
+            if schema_name.endswith("v1.json"):
+                self.assertIn("recalled", event_types)
+                self.assertIn("reconsolidated", event_types)
+            self.assertIn("signature", schema["properties"])
+            self.assertIn("attestation", schema["properties"])
+            self.assertIn("ed25519", schema["properties"]["signature"]["properties"]["alg"]["enum"])
 
     def test_validate_event_envelope_accepts_valid_shape(self) -> None:
         validate_event_envelope(_valid_event())

@@ -115,6 +115,26 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
     p_query.add_argument("--trust-states-json", default="null")
     p_query.add_argument("--limit", type=int, default=None)
 
+    p_peek = sub.add_parser("peek")
+    p_peek.add_argument("--memory-id", required=True)
+
+    p_recall = sub.add_parser("recall")
+    p_recall.add_argument("--memory-id", required=True)
+    p_recall.add_argument("--actor-json", required=True)
+    p_recall.add_argument("--event-id", default=None)
+    p_recall.add_argument("--timestamp-json", default=None)
+    p_recall.add_argument("--evidence-refs-json", default=None)
+
+    p_reconsolidate = sub.add_parser("reconsolidate")
+    p_reconsolidate.add_argument("--memory-id", required=True)
+    p_reconsolidate.add_argument("--actor-json", required=True)
+    p_reconsolidate.add_argument("--payload-hash", required=True)
+    p_reconsolidate.add_argument("--event-id", default=None)
+    p_reconsolidate.add_argument("--timestamp-json", default=None)
+    p_reconsolidate.add_argument("--evidence-refs-json", default=None)
+    p_reconsolidate.add_argument("--signature-json", default=None)
+    p_reconsolidate.add_argument("--attestation-json", default=None)
+
     p_explain = sub.add_parser("explain")
     p_explain.add_argument("--memory-id", required=True)
 
@@ -193,6 +213,68 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
                 limit=args.limit,
             )
             out.write(json.dumps({"count": len(records), "records": records}, sort_keys=True) + "\n")
+            return 0
+
+        if args.command == "peek":
+            record = runtime.peek(
+                args.memory_id,
+                policy_context={"tenant_id": args.tenant_id},
+                trusted_context=trusted_context,
+            )
+            out.write(
+                json.dumps({"memory_id": args.memory_id, "record": record}, sort_keys=True) + "\n"
+            )
+            return 0
+
+        if args.command == "recall":
+            result = runtime.recall(
+                args.memory_id,
+                actor=_load_json_arg(args.actor_json),
+                policy_context={"tenant_id": args.tenant_id},
+                trusted_context=trusted_context,
+                event_id=args.event_id,
+                timestamp=(
+                    _load_json_arg(args.timestamp_json) if args.timestamp_json is not None else None
+                ),
+                evidence_refs=(
+                    _load_json_arg(args.evidence_refs_json)
+                    if args.evidence_refs_json is not None
+                    else None
+                ),
+            )
+            if state_path is not None and result["outcome"] == "appended":
+                _save_state(state_path, runtime)
+            out.write(json.dumps({"memory_id": args.memory_id, **result}, sort_keys=True) + "\n")
+            return 0
+
+        if args.command == "reconsolidate":
+            result = runtime.reconsolidate(
+                args.memory_id,
+                actor=_load_json_arg(args.actor_json),
+                payload_hash=args.payload_hash,
+                policy_context={"tenant_id": args.tenant_id},
+                trusted_context=trusted_context,
+                event_id=args.event_id,
+                timestamp=(
+                    _load_json_arg(args.timestamp_json) if args.timestamp_json is not None else None
+                ),
+                evidence_refs=(
+                    _load_json_arg(args.evidence_refs_json)
+                    if args.evidence_refs_json is not None
+                    else None
+                ),
+                signature=(
+                    _load_json_arg(args.signature_json) if args.signature_json is not None else None
+                ),
+                attestation=(
+                    _load_json_arg(args.attestation_json)
+                    if args.attestation_json is not None
+                    else None
+                ),
+            )
+            if state_path is not None and result["outcome"] == "appended":
+                _save_state(state_path, runtime)
+            out.write(json.dumps({"memory_id": args.memory_id, **result}, sort_keys=True) + "\n")
             return 0
 
         if args.command == "explain":

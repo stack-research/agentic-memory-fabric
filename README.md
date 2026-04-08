@@ -49,6 +49,9 @@ Example endpoints:
 - `POST /ingest/event`
 - `POST /ingest/import`
 - `POST /query`
+- `POST /memory/{memory_id}/peek`
+- `POST /memory/{memory_id}/recall`
+- `POST /memory/{memory_id}/reconsolidate`
 - `GET /memory/{memory_id}/explain`
 - `POST /export/snapshot`
 - `POST /export/provenance`
@@ -66,6 +69,11 @@ python3 -m agentic_memory_fabric.cli --state-file .amf-state.json query \
   --tenant-id tenant-alpha \
   --capabilities-json '["override_retrieval_denials"]' \
   --keyring-json '{"dev-key":{"key":"super-secret","status":"active"}}'
+
+python3 -m agentic_memory_fabric.cli --state-file .amf-state.json recall \
+  --tenant-id tenant-alpha \
+  --memory-id aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa \
+  --actor-json '{"id":"svc-memory","kind":"service"}'
 ```
 
 ### CLI walkthrough scripts
@@ -85,6 +93,9 @@ Runtime operations can emit structured audit records through an optional sink ca
 Current event types include:
 - `memory.query`
 - `memory.get`
+- `memory.peek`
+- `memory.recall`
+- `memory.reconsolidate`
 - `memory.explain`
 - `memory.export.snapshot`
 - `memory.export.provenance`

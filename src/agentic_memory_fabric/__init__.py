@@ -27,7 +27,16 @@ from .importer import append_imported_records, import_records
 from .log import AppendOnlyEventLog, EventLog
 from .policy import ATTESTATION_TRUST_LEVELS, PolicyContext, PolicyDecision, evaluate_retrieval_policy
 from .replay import MemoryState, replay_events
-from .retrieval import GetOutcome, QueryAuditSummary, RetrievalRecord, get, get_outcome, query, query_with_summary
+from .retrieval import (
+    GetOutcome,
+    QueryAuditSummary,
+    RetrievalRecord,
+    get,
+    get_outcome,
+    peek,
+    query,
+    query_with_summary,
+)
 from .runtime import AuditSink, MemoryRuntime, open_runtime
 from .service import ServiceApp, run_http_server
 from .sqlite_store import SQLiteEventLog
@@ -85,6 +94,7 @@ __all__ = [
     "run_cli",
     "run_http_server",
     "open_runtime",
+    "peek",
     "sign_event",
     "validate_event_envelope",
     "verify_event_signature",

@@ -72,10 +72,19 @@ def evaluate_retrieval_policy(state: MemoryState, policy_context: PolicyContext)
     if denial_reason is None and policy_context.decay_policy is not None:
         if policy_context.current_tick is None:
             raise ValueError("current_tick is required when decay_policy is configured")
+        freshness_tick = (
+            state.last_recall_tick
+            if state.last_recall_tick is not None
+            else (
+                state.last_write_tick
+                if state.last_write_tick is not None
+                else state.last_tick
+            )
+        )
         freshness = evaluate_freshness(
             policy=policy_context.decay_policy,
             current_tick=policy_context.current_tick,
-            last_tick=state.last_tick,
+            last_tick=freshness_tick,
         )
         if not freshness.is_fresh:
             denial_reason = "decay_expired_default_deny"

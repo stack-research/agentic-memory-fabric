@@ -147,6 +147,53 @@ class ServiceApp:
             )
             return respond(HTTPStatus.OK, {"count": len(records), "records": records})
 
+        if method == "POST" and route.startswith("/memory/") and route.endswith("/peek"):
+            parts = route.split("/")
+            if len(parts) != 4:
+                return _json_response(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+            memory_id = parts[2]
+            record = self.runtime.peek(
+                memory_id,
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+            )
+            return respond(HTTPStatus.OK, {"memory_id": memory_id, "record": record})
+
+        if method == "POST" and route.startswith("/memory/") and route.endswith("/recall"):
+            parts = route.split("/")
+            if len(parts) != 4:
+                return _json_response(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+            memory_id = parts[2]
+            result = self.runtime.recall(
+                memory_id,
+                actor=payload["actor"],
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+                event_id=payload.get("event_id"),
+                timestamp=payload.get("timestamp"),
+                evidence_refs=payload.get("evidence_refs"),
+            )
+            return respond(HTTPStatus.OK, {"memory_id": memory_id, **result})
+
+        if method == "POST" and route.startswith("/memory/") and route.endswith("/reconsolidate"):
+            parts = route.split("/")
+            if len(parts) != 4:
+                return _json_response(HTTPStatus.NOT_FOUND, {"error": "Not found"})
+            memory_id = parts[2]
+            result = self.runtime.reconsolidate(
+                memory_id,
+                actor=payload["actor"],
+                payload_hash=payload["payload_hash"],
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+                event_id=payload.get("event_id"),
+                timestamp=payload.get("timestamp"),
+                evidence_refs=payload.get("evidence_refs"),
+                signature=payload.get("signature"),
+                attestation=payload.get("attestation"),
+            )
+            return respond(HTTPStatus.OK, {"memory_id": memory_id, **result})
+
         if method == "GET" and route.startswith("/memory/") and route.endswith("/explain"):
             parts = route.split("/")
             if len(parts) != 4:

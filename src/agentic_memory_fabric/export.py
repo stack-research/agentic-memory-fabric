@@ -26,6 +26,12 @@ def export_sbom_snapshot(
             "why_sound": record.why_sound,
             "lifecycle_state": record.lifecycle_state,
             "signature_state": record.signature_state,
+            "lineage_depth": record.lineage_depth,
+            "recall_count": record.recall_count,
+            "reconsolidation_count": record.reconsolidation_count,
+            "last_access_tick": record.last_access_tick,
+            "last_recall_tick": record.last_recall_tick,
+            "last_write_tick": record.last_write_tick,
             "denial_reason": record.denial_reason,
             "override_used": record.override_used,
         }

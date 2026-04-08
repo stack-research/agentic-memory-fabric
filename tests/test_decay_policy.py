@@ -28,6 +28,7 @@ class DecayPolicyTests(unittest.TestCase):
             last_tick=last_tick,
             payload_hash="sha256:" + ("a" * 64),
             previous_events=(),
+            last_write_tick=last_tick,
         )
 
     def test_compute_age_ticks_from_logical_clock(self) -> None:
@@ -79,3 +80,24 @@ class DecayPolicyTests(unittest.TestCase):
         self.assertTrue(record.override_used)
         self.assertEqual(record.denial_reason, "decay_expired_default_deny")
         self.assertEqual(record.why_sound, "override:decay_expired_default_deny")
+
+    def test_decay_prefers_last_recall_tick_over_last_write_tick(self) -> None:
+        state = self._trusted_state(last_tick=3)
+        state = MemoryState(
+            **{
+                **state.__dict__,
+                "last_write_tick": 3,
+                "last_recall_tick": 9,
+                "last_access_tick": 9,
+            }
+        )
+        record = get(
+            "mem-trusted",
+            {"mem-trusted": state},
+            PolicyContext(
+                tenant_id="tenant-alpha",
+                current_tick=10,
+                decay_policy=DecayPolicy(max_age_ticks=3),
+            ),
+        )
+        self.assertIsNotNone(record)

@@ -13,6 +13,8 @@ VALID_EVENT_TYPES = frozenset(
         "created",
         "updated",
         "superseded",
+        "recalled",
+        "reconsolidated",
         "quarantined",
         "released",
         "expired",

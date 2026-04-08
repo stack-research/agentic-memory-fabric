@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping
+from uuid import uuid4
 
 from .crypto import KeyMaterial, verify_event_signature
 from .decay import DecayPolicy
-from .events import EventEnvelope
+from .events import Actor, EventEnvelope
 from .explain import explain
 from .export import export_provenance_log, export_sbom_snapshot
 from .importer import append_imported_records
@@ -112,6 +114,124 @@ class MemoryRuntime:
         self._state_cache = None
         self._events_cache = None
 
+    def _next_sequence(self) -> int:
+        return len(self.log) + 1
+
+    def _normalize_timestamp(
+        self,
+        timestamp: Mapping[str, Any] | None,
+        *,
+        sequence: int,
+    ) -> dict[str, Any]:
+        if timestamp is None:
+            wall_time = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            return {"wall_time": wall_time, "tick": sequence}
+        out = dict(timestamp)
+        out.setdefault("tick", sequence)
+        return out
+
+    def _validate_dynamic_event(self, event: EventEnvelope) -> None:
+        if event.event_type not in {"recalled", "reconsolidated"}:
+            return
+        state = self.state_map().get(event.memory_id)
+        if state is None:
+            raise ValueError(f"{event.event_type} events require an existing memory head")
+        if tuple(event.previous_events) != (state.last_event_id,):
+            raise ValueError(
+                f"{event.event_type} events must point to the current memory head"
+            )
+        if event.event_type == "recalled":
+            if event.trust_transition is not None:
+                raise ValueError("recalled events must not include trust_transition")
+            if event.payload_hash != state.payload_hash:
+                raise ValueError("recalled events must preserve the current payload_hash")
+            return
+        if event.payload_hash == state.payload_hash:
+            raise ValueError(
+                "reconsolidated events must change the payload_hash from the current head"
+            )
+
+    def _policy_outcome(
+        self,
+        memory_id: str,
+        *,
+        policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
+    ) -> tuple[PolicyContext, Any]:
+        ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
+        outcome = get_outcome(memory_id, self.state_map(), ctx)
+        return ctx, outcome
+
+    def _mutation_result(
+        self,
+        *,
+        outcome: str,
+        record: dict[str, Any] | None = None,
+        denial_reason: str | None = None,
+        event: EventEnvelope | None = None,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "outcome": outcome,
+            "record": record,
+            "denial_reason": denial_reason,
+        }
+        if event is not None:
+            result["event"] = event.to_dict()
+        return result
+
+    def _peek_record(
+        self,
+        memory_id: str,
+        *,
+        policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
+        outcome = get_outcome(memory_id, self.state_map(), ctx)
+        return None if outcome.record is None else outcome.record.__dict__
+
+    def _append_dynamic_event(
+        self,
+        *,
+        memory_id: str,
+        event_type: str,
+        actor: Mapping[str, Any] | Actor,
+        payload_hash: str,
+        trusted_context: Mapping[str, Any] | None,
+        event_id: str | None = None,
+        timestamp: Mapping[str, Any] | None = None,
+        evidence_refs: list[Mapping[str, Any]] | None = None,
+        signature: Mapping[str, Any] | None = None,
+        attestation: Mapping[str, Any] | None = None,
+    ) -> EventEnvelope:
+        state = self.state_map().get(memory_id)
+        if state is None:
+            raise ValueError(f"{event_type} events require an existing memory head")
+        sequence = self._next_sequence()
+        actor_dict = actor.to_dict() if isinstance(actor, Actor) else dict(actor)
+        event_data: dict[str, Any] = {
+            "event_id": event_id or str(uuid4()),
+            "sequence": sequence,
+            "timestamp": self._normalize_timestamp(timestamp, sequence=sequence),
+            "actor": actor_dict,
+            "tenant_id": state.tenant_id,
+            "memory_id": memory_id,
+            "event_type": event_type,
+            "previous_events": [state.last_event_id],
+            "payload_hash": payload_hash,
+        }
+        if evidence_refs is not None:
+            event_data["evidence_refs"] = evidence_refs
+        if signature is not None:
+            event_data["signature"] = signature
+        if attestation is not None:
+            event_data["attestation"] = attestation
+        return self.ingest_event(
+            event_data,
+            expected_tenant_id=self._expected_tenant_id(trusted_context),
+            trusted_context=trusted_context,
+        )
+
     def _load_events_and_signature_states(self) -> tuple[tuple[EventEnvelope, ...], dict[str, str]]:
         if hasattr(self.log, "all_events_with_signature_states"):
             events, signature_states = self.log.all_events_with_signature_states()
@@ -148,6 +268,7 @@ class MemoryRuntime:
         expected_tenant_id = expected_tenant_id or self._expected_tenant_id(trusted_context)
         if expected_tenant_id is not None and event.tenant_id != expected_tenant_id:
             raise ValueError("tenant mismatch between trusted context and event payload")
+        self._validate_dynamic_event(event)
         self.log.append(event, signature_verifier=self._signature_verifier)
         self._invalidate_read_model_cache()
         return event
@@ -218,18 +339,19 @@ class MemoryRuntime:
         )
         return records_out
 
-    def get(
+    def peek(
         self,
         memory_id: str,
         *,
         policy_context: Mapping[str, Any] | None = None,
         trusted_context: Mapping[str, Any] | None = None,
+        audit_type: str = "memory.peek",
     ) -> dict[str, Any] | None:
         ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
         outcome = get_outcome(memory_id, self.state_map(), ctx)
         self._emit_audit(
             {
-                "type": "memory.get",
+                "type": audit_type,
                 "tenant_id": ctx.tenant_id,
                 "memory_id": memory_id,
                 "outcome": outcome.outcome,
@@ -237,6 +359,151 @@ class MemoryRuntime:
             }
         )
         return None if outcome.record is None else outcome.record.__dict__
+
+    def get(
+        self,
+        memory_id: str,
+        *,
+        policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        return self.peek(
+            memory_id,
+            policy_context=policy_context,
+            trusted_context=trusted_context,
+            audit_type="memory.get",
+        )
+
+    def recall(
+        self,
+        memory_id: str,
+        *,
+        actor: Mapping[str, Any] | Actor,
+        policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
+        event_id: str | None = None,
+        timestamp: Mapping[str, Any] | None = None,
+        evidence_refs: list[Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        ctx, outcome = self._policy_outcome(
+            memory_id,
+            policy_context=policy_context,
+            trusted_context=trusted_context,
+        )
+        if outcome.outcome != "allowed" or outcome.record is None:
+            result = self._mutation_result(
+                outcome=outcome.outcome,
+                denial_reason=outcome.denial_reason,
+            )
+            self._emit_audit(
+                {
+                    "type": "memory.recall",
+                    "tenant_id": ctx.tenant_id,
+                    "memory_id": memory_id,
+                    "outcome": outcome.outcome,
+                    "denial_reason": outcome.denial_reason,
+                }
+            )
+            return result
+        event = self._append_dynamic_event(
+            memory_id=memory_id,
+            event_type="recalled",
+            actor=actor,
+            payload_hash=self.state_map()[memory_id].payload_hash,
+            trusted_context=trusted_context,
+            event_id=event_id,
+            timestamp=timestamp,
+            evidence_refs=evidence_refs,
+        )
+        record = self._peek_record(
+            memory_id,
+            policy_context=policy_context,
+            trusted_context=trusted_context,
+        )
+        result = self._mutation_result(
+            outcome="appended",
+            record=record,
+            event=event,
+        )
+        self._emit_audit(
+            {
+                "type": "memory.recall",
+                "tenant_id": ctx.tenant_id,
+                "memory_id": memory_id,
+                "outcome": "appended",
+                "denial_reason": None,
+                "event_id": event.event_id,
+            }
+        )
+        return result
+
+    def reconsolidate(
+        self,
+        memory_id: str,
+        *,
+        actor: Mapping[str, Any] | Actor,
+        payload_hash: str,
+        policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
+        event_id: str | None = None,
+        timestamp: Mapping[str, Any] | None = None,
+        evidence_refs: list[Mapping[str, Any]] | None = None,
+        signature: Mapping[str, Any] | None = None,
+        attestation: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        ctx, outcome = self._policy_outcome(
+            memory_id,
+            policy_context=policy_context,
+            trusted_context=trusted_context,
+        )
+        if outcome.outcome != "allowed" or outcome.record is None:
+            result = self._mutation_result(
+                outcome=outcome.outcome,
+                denial_reason=outcome.denial_reason,
+            )
+            self._emit_audit(
+                {
+                    "type": "memory.reconsolidate",
+                    "tenant_id": ctx.tenant_id,
+                    "memory_id": memory_id,
+                    "outcome": outcome.outcome,
+                    "denial_reason": outcome.denial_reason,
+                }
+            )
+            return result
+        event = self._append_dynamic_event(
+            memory_id=memory_id,
+            event_type="reconsolidated",
+            actor=actor,
+            payload_hash=payload_hash,
+            trusted_context=trusted_context,
+            event_id=event_id,
+            timestamp=timestamp,
+            evidence_refs=evidence_refs,
+            signature=signature,
+            attestation=attestation,
+        )
+        record = self._peek_record(
+            memory_id,
+            policy_context=policy_context,
+            trusted_context=trusted_context,
+        )
+        result = self._mutation_result(
+            outcome="appended",
+            record=record,
+            event=event,
+        )
+        self._emit_audit(
+            {
+                "type": "memory.reconsolidate",
+                "tenant_id": ctx.tenant_id,
+                "memory_id": memory_id,
+                "outcome": "appended",
+                "denial_reason": None,
+                "event_id": event.event_id,
+            }
+        )
+        return result
 
     def explain(
         self,

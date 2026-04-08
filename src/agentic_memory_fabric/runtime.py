@@ -28,6 +28,11 @@ from .policy import (
 from .promotion import PromotionAssessment, compute_promotion_score
 from .query_index import InMemoryQueryIndex, QueryIndex
 from .replay import MemoryState, replay_events
+from .resolution import (
+    DEFAULT_RESOLVER_KIND,
+    ConflictAssessment,
+    stable_conflict_set_id,
+)
 from .retrieval import get_outcome, query_with_summary, to_retrieval_record
 from .sqlite_store import SQLiteEventLog
 
@@ -175,6 +180,9 @@ class MemoryRuntime:
             "linked",
             "reinforced",
             "conflicted",
+            "merge_proposed",
+            "merge_approved",
+            "merge_rejected",
         }:
             return
         if event.event_type == "promoted":
@@ -203,6 +211,30 @@ class MemoryRuntime:
                 if state.memory_class != "episodic":
                     raise ValueError("promoted events may only derive from episodic memories")
             return
+        if event.event_type == "merge_proposed":
+            if self.state_map().get(event.memory_id) is not None:
+                raise ValueError("merge_proposed events must create a new semantic memory")
+            if (
+                len(event.resolved_from_memory_ids) < 2
+                or len(event.resolved_from_memory_ids) != len(event.resolved_from_event_ids)
+            ):
+                raise ValueError(
+                    "merge_proposed events require aligned resolved_from_memory_ids and resolved_from_event_ids"
+                )
+            if tuple(event.previous_events) != tuple(event.resolved_from_event_ids):
+                raise ValueError("merge_proposed events must point to the source head events")
+            for source_memory_id, source_event_id in zip(
+                event.resolved_from_memory_ids,
+                event.resolved_from_event_ids,
+            ):
+                source_state = self.state_map().get(source_memory_id)
+                if source_state is None:
+                    raise ValueError("merge_proposed events require existing source memories")
+                if source_state.tenant_id != event.tenant_id:
+                    raise ValueError("merge_proposed events must stay within a single tenant")
+                if source_state.last_event_id != source_event_id:
+                    raise ValueError("merge_proposed events must reference current source heads")
+            return
         state = self.state_map().get(event.memory_id)
         if state is None:
             raise ValueError(f"{event.event_type} events require an existing memory head")
@@ -210,6 +242,12 @@ class MemoryRuntime:
             raise ValueError(
                 f"{event.event_type} events must point to the current memory head"
             )
+        if event.event_type in {"merge_approved", "merge_rejected"}:
+            if state.last_event_type != "merge_proposed":
+                raise ValueError(f"{event.event_type} events require an open merge proposal")
+            if event.payload_hash != state.payload_hash:
+                raise ValueError(f"{event.event_type} events must preserve the current payload_hash")
+            return
         if event.event_type in {"linked", "reinforced", "conflicted"}:
             if event.payload_hash != state.payload_hash:
                 raise ValueError(
@@ -318,6 +356,138 @@ class MemoryRuntime:
             promoted_from_memory_ids=state.promoted_from_memory_ids,
         )
 
+    def _has_conflict_relationship(
+        self,
+        left_memory_id: str,
+        right_memory_id: str,
+        state_map: Mapping[str, MemoryState],
+    ) -> bool:
+        left = state_map.get(left_memory_id)
+        right = state_map.get(right_memory_id)
+        if left is None or right is None:
+            return False
+        return (
+            right_memory_id in left.conflicted_memory_ids
+            or left_memory_id in right.conflicted_memory_ids
+        )
+
+    def _assess_conflict_state(
+        self,
+        memory_id: str,
+        related_memory_id: str,
+        *,
+        policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
+    ) -> tuple[PolicyContext, ConflictAssessment]:
+        ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
+        state_map = self.state_map()
+        left = state_map.get(memory_id)
+        right = state_map.get(related_memory_id)
+        if left is None:
+            return ctx, ConflictAssessment(
+                memory_id=memory_id,
+                related_memory_id=related_memory_id,
+                tenant_id=ctx.tenant_id,
+                source_event_ids=(),
+                conflict_set_id=None,
+                resolvable=False,
+                denial_reason="memory_not_found",
+                override_used=False,
+            )
+        if right is None:
+            return ctx, ConflictAssessment(
+                memory_id=memory_id,
+                related_memory_id=related_memory_id,
+                tenant_id=left.tenant_id,
+                source_event_ids=(left.last_event_id,),
+                conflict_set_id=None,
+                resolvable=False,
+                denial_reason="related_memory_not_found",
+                override_used=False,
+            )
+        if memory_id == related_memory_id:
+            return ctx, ConflictAssessment(
+                memory_id=memory_id,
+                related_memory_id=related_memory_id,
+                tenant_id=left.tenant_id,
+                source_event_ids=(left.last_event_id, right.last_event_id),
+                conflict_set_id=None,
+                resolvable=False,
+                denial_reason="same_memory_not_allowed",
+                override_used=False,
+            )
+        if left.tenant_id != right.tenant_id:
+            return ctx, ConflictAssessment(
+                memory_id=memory_id,
+                related_memory_id=related_memory_id,
+                tenant_id=left.tenant_id,
+                source_event_ids=(left.last_event_id, right.last_event_id),
+                conflict_set_id=None,
+                resolvable=False,
+                denial_reason="cross_tenant_merge_default_deny",
+                override_used=False,
+            )
+        left_outcome = get_outcome(memory_id, state_map, ctx)
+        right_outcome = get_outcome(related_memory_id, state_map, ctx)
+        if left_outcome.record is None:
+            return ctx, ConflictAssessment(
+                memory_id=memory_id,
+                related_memory_id=related_memory_id,
+                tenant_id=left.tenant_id,
+                source_event_ids=(left.last_event_id, right.last_event_id),
+                conflict_set_id=None,
+                resolvable=False,
+                denial_reason=left_outcome.denial_reason,
+                override_used=False,
+            )
+        if right_outcome.record is None:
+            return ctx, ConflictAssessment(
+                memory_id=memory_id,
+                related_memory_id=related_memory_id,
+                tenant_id=left.tenant_id,
+                source_event_ids=(left.last_event_id, right.last_event_id),
+                conflict_set_id=None,
+                resolvable=False,
+                denial_reason=right_outcome.denial_reason,
+                override_used=left_outcome.record.override_used,
+            )
+        if not left.queryable_payload_present or not right.queryable_payload_present:
+            return ctx, ConflictAssessment(
+                memory_id=memory_id,
+                related_memory_id=related_memory_id,
+                tenant_id=left.tenant_id,
+                source_event_ids=(left.last_event_id, right.last_event_id),
+                conflict_set_id=None,
+                resolvable=False,
+                denial_reason="queryable_payload_required_for_merge",
+                override_used=(
+                    left_outcome.record.override_used or right_outcome.record.override_used
+                ),
+            )
+        if not self._has_conflict_relationship(memory_id, related_memory_id, state_map):
+            return ctx, ConflictAssessment(
+                memory_id=memory_id,
+                related_memory_id=related_memory_id,
+                tenant_id=left.tenant_id,
+                source_event_ids=(left.last_event_id, right.last_event_id),
+                conflict_set_id=None,
+                resolvable=False,
+                denial_reason="conflict_edge_required",
+                override_used=(
+                    left_outcome.record.override_used or right_outcome.record.override_used
+                ),
+            )
+        return ctx, ConflictAssessment(
+            memory_id=memory_id,
+            related_memory_id=related_memory_id,
+            tenant_id=left.tenant_id,
+            source_event_ids=(left.last_event_id, right.last_event_id),
+            conflict_set_id=stable_conflict_set_id((memory_id, related_memory_id)),
+            resolvable=True,
+            denial_reason=None,
+            override_used=left_outcome.record.override_used or right_outcome.record.override_used,
+        )
+
     def _append_dynamic_event(
         self,
         *,
@@ -335,6 +505,7 @@ class MemoryRuntime:
         target_memory_id: str | None = None,
         edge_weight: float | None = None,
         edge_reason: str | None = None,
+        resolution_reason: str | None = None,
     ) -> EventEnvelope:
         state = self.state_map().get(memory_id)
         if state is None:
@@ -360,6 +531,8 @@ class MemoryRuntime:
             event_data["edge_weight"] = edge_weight
         if edge_reason is not None:
             event_data["edge_reason"] = edge_reason
+        if resolution_reason is not None:
+            event_data["resolution_reason"] = resolution_reason
         if evidence_refs is not None:
             event_data["evidence_refs"] = evidence_refs
         if signature is not None:
@@ -433,6 +606,9 @@ class MemoryRuntime:
             "version",
             "queryable_payload_present",
             "promotion_eligible",
+            "conflict_open",
+            "merged_into_memory_id",
+            "superseded_by_memory_id",
             "min_reinforcement_score",
             "max_conflict_score",
         }
@@ -837,6 +1013,44 @@ class MemoryRuntime:
         )
         return result
 
+    def assess_conflict(
+        self,
+        memory_id: str,
+        related_memory_id: str,
+        *,
+        policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        ctx, assessment = self._assess_conflict_state(
+            memory_id,
+            related_memory_id,
+            policy_context=policy_context,
+            trusted_context=trusted_context,
+        )
+        result = {
+            "memory_id": assessment.memory_id,
+            "related_memory_id": assessment.related_memory_id,
+            "tenant_id": assessment.tenant_id,
+            "source_event_ids": list(assessment.source_event_ids),
+            "conflict_set_id": assessment.conflict_set_id,
+            "resolvable": assessment.resolvable,
+            "denial_reason": assessment.denial_reason,
+            "override_used": assessment.override_used,
+        }
+        self._emit_audit(
+            {
+                "type": "memory.assess_conflict",
+                "tenant_id": ctx.tenant_id,
+                "memory_id": memory_id,
+                "related_memory_id": related_memory_id,
+                "conflict_set_id": assessment.conflict_set_id,
+                "resolvable": assessment.resolvable,
+                "denial_reason": assessment.denial_reason,
+                "override_used": assessment.override_used,
+            }
+        )
+        return result
+
     def promote(
         self,
         memory_ids: list[str] | tuple[str, ...],
@@ -943,6 +1157,320 @@ class MemoryRuntime:
                 "tenant_id": ctx.tenant_id,
                 "memory_ids": [state.memory_id for state in source_states],
                 "promoted_memory_id": new_memory_id,
+                "outcome": "appended",
+                "denial_reason": None,
+                "event_id": event.event_id,
+            }
+        )
+        return result
+
+    def propose_merge(
+        self,
+        memory_ids: list[str] | tuple[str, ...],
+        *,
+        actor: Mapping[str, Any] | Actor,
+        payload: Any,
+        resolver_kind: str = DEFAULT_RESOLVER_KIND,
+        resolution_reason: str | None = None,
+        policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
+        merged_memory_id: str | None = None,
+        event_id: str | None = None,
+        timestamp: Mapping[str, Any] | None = None,
+        evidence_refs: list[Mapping[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        if len(memory_ids) < 2:
+            raise ValueError("memory_ids must include at least two source memories")
+        normalized_memory_ids = [str(memory_id) for memory_id in memory_ids]
+        if len(set(normalized_memory_ids)) != len(normalized_memory_ids):
+            raise ValueError("memory_ids must not contain duplicates")
+
+        ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
+        state_map = self.state_map()
+        source_states: list[MemoryState] = []
+        source_denials: dict[str, str] = {}
+        for memory_id in normalized_memory_ids:
+            state = state_map.get(memory_id)
+            if state is None:
+                source_denials[memory_id] = "memory_not_found"
+                continue
+            outcome = get_outcome(memory_id, state_map, ctx)
+            if outcome.record is None:
+                source_denials[memory_id] = outcome.denial_reason or "merge_denied"
+                continue
+            if not state.queryable_payload_present:
+                source_denials[memory_id] = "queryable_payload_required_for_merge"
+                continue
+            source_states.append(state)
+        if not source_denials:
+            for source_memory_id in normalized_memory_ids:
+                peers = [memory_id for memory_id in normalized_memory_ids if memory_id != source_memory_id]
+                if not any(
+                    self._has_conflict_relationship(source_memory_id, peer_memory_id, state_map)
+                    for peer_memory_id in peers
+                ):
+                    source_denials[source_memory_id] = "conflict_edge_required"
+        if source_denials:
+            denial_reason = next(iter(source_denials.values()))
+            result = {
+                "outcome": "denied",
+                "record": None,
+                "denial_reason": denial_reason,
+                "source_denials": source_denials,
+            }
+            self._emit_audit(
+                {
+                    "type": "memory.merge_propose",
+                    "tenant_id": ctx.tenant_id,
+                    "memory_ids": list(normalized_memory_ids),
+                    "outcome": "denied",
+                    "denial_reason": denial_reason,
+                    "source_denials": dict(source_denials),
+                }
+            )
+            return result
+
+        tenant_ids = {state.tenant_id for state in source_states}
+        if len(tenant_ids) != 1:
+            raise ValueError("merge proposal sources must belong to a single tenant")
+        new_memory_id = merged_memory_id or str(uuid4())
+        if new_memory_id in state_map:
+            raise ValueError("merged_memory_id already exists")
+        source_event_ids = [state.last_event_id for state in source_states]
+        sequence = self._next_sequence()
+        actor_dict = actor.to_dict() if isinstance(actor, Actor) else dict(actor)
+        event_data: dict[str, Any] = {
+            "event_id": event_id or str(uuid4()),
+            "sequence": sequence,
+            "timestamp": self._normalize_timestamp(timestamp, sequence=sequence),
+            "actor": actor_dict,
+            "tenant_id": source_states[0].tenant_id,
+            "memory_id": new_memory_id,
+            "event_type": "merge_proposed",
+            "memory_class": "semantic",
+            "previous_events": list(source_event_ids),
+            "resolved_from_memory_ids": [state.memory_id for state in source_states],
+            "resolved_from_event_ids": list(source_event_ids),
+            "resolver_kind": str(resolver_kind),
+            "payload": payload,
+            "payload_hash": canonical_payload_hash(payload),
+        }
+        if resolution_reason is not None:
+            event_data["resolution_reason"] = resolution_reason
+        if evidence_refs is not None:
+            event_data["evidence_refs"] = evidence_refs
+        event = self.ingest_event(
+            event_data,
+            expected_tenant_id=source_states[0].tenant_id,
+            trusted_context=trusted_context,
+        )
+        record = self._peek_record(
+            new_memory_id,
+            policy_context=policy_context,
+            trusted_context=trusted_context,
+        )
+        result = {
+            "outcome": "appended",
+            "record": record,
+            "denial_reason": None,
+            "event": event.to_dict(),
+            "merged_memory_id": new_memory_id,
+            "source_memory_ids": [state.memory_id for state in source_states],
+        }
+        self._emit_audit(
+            {
+                "type": "memory.merge_propose",
+                "tenant_id": ctx.tenant_id,
+                "memory_ids": [state.memory_id for state in source_states],
+                "merged_memory_id": new_memory_id,
+                "outcome": "appended",
+                "denial_reason": None,
+                "event_id": event.event_id,
+            }
+        )
+        return result
+
+    def approve_merge(
+        self,
+        memory_id: str,
+        *,
+        actor: Mapping[str, Any] | Actor,
+        policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
+        event_id: str | None = None,
+        timestamp: Mapping[str, Any] | None = None,
+        evidence_refs: list[Mapping[str, Any]] | None = None,
+        resolution_reason: str | None = None,
+    ) -> dict[str, Any]:
+        ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
+        state = self.state_map().get(memory_id)
+        if state is None:
+            result = self._mutation_result(outcome="not_found", denial_reason="memory_not_found")
+            self._emit_audit(
+                {
+                    "type": "memory.merge_approve",
+                    "tenant_id": ctx.tenant_id,
+                    "memory_id": memory_id,
+                    "outcome": "not_found",
+                    "denial_reason": "memory_not_found",
+                }
+            )
+            return result
+        if ctx.tenant_id is None:
+            denial_reason = "tenant_scope_required_default_deny"
+            result = self._mutation_result(outcome="denied", denial_reason=denial_reason)
+            self._emit_audit(
+                {
+                    "type": "memory.merge_approve",
+                    "tenant_id": ctx.tenant_id,
+                    "memory_id": memory_id,
+                    "outcome": "denied",
+                    "denial_reason": denial_reason,
+                }
+            )
+            return result
+        if state.tenant_id != ctx.tenant_id:
+            denial_reason = "tenant_scope_mismatch_default_deny"
+            result = self._mutation_result(outcome="denied", denial_reason=denial_reason)
+            self._emit_audit(
+                {
+                    "type": "memory.merge_approve",
+                    "tenant_id": ctx.tenant_id,
+                    "memory_id": memory_id,
+                    "outcome": "denied",
+                    "denial_reason": denial_reason,
+                }
+            )
+            return result
+        if state.last_event_type != "merge_proposed" or not state.conflict_open:
+            denial_reason = "merge_proposal_not_open"
+            result = self._mutation_result(outcome="denied", denial_reason=denial_reason)
+            self._emit_audit(
+                {
+                    "type": "memory.merge_approve",
+                    "tenant_id": ctx.tenant_id,
+                    "memory_id": memory_id,
+                    "outcome": "denied",
+                    "denial_reason": denial_reason,
+                }
+            )
+            return result
+        event = self._append_dynamic_event(
+            memory_id=memory_id,
+            event_type="merge_approved",
+            actor=actor,
+            payload_hash=state.payload_hash,
+            trusted_context=trusted_context,
+            event_id=event_id,
+            timestamp=timestamp,
+            evidence_refs=evidence_refs,
+            resolution_reason=resolution_reason,
+        )
+        record = self._peek_record(
+            memory_id,
+            policy_context=policy_context,
+            trusted_context=trusted_context,
+        )
+        result = self._mutation_result(outcome="appended", record=record, event=event)
+        self._emit_audit(
+            {
+                "type": "memory.merge_approve",
+                "tenant_id": ctx.tenant_id,
+                "memory_id": memory_id,
+                "outcome": "appended",
+                "denial_reason": None,
+                "event_id": event.event_id,
+            }
+        )
+        return result
+
+    def reject_merge(
+        self,
+        memory_id: str,
+        *,
+        actor: Mapping[str, Any] | Actor,
+        policy_context: Mapping[str, Any] | None = None,
+        trusted_context: Mapping[str, Any] | None = None,
+        event_id: str | None = None,
+        timestamp: Mapping[str, Any] | None = None,
+        evidence_refs: list[Mapping[str, Any]] | None = None,
+        resolution_reason: str | None = None,
+    ) -> dict[str, Any]:
+        ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
+        state = self.state_map().get(memory_id)
+        if state is None:
+            result = self._mutation_result(outcome="not_found", denial_reason="memory_not_found")
+            self._emit_audit(
+                {
+                    "type": "memory.merge_reject",
+                    "tenant_id": ctx.tenant_id,
+                    "memory_id": memory_id,
+                    "outcome": "not_found",
+                    "denial_reason": "memory_not_found",
+                }
+            )
+            return result
+        if ctx.tenant_id is None:
+            denial_reason = "tenant_scope_required_default_deny"
+            result = self._mutation_result(outcome="denied", denial_reason=denial_reason)
+            self._emit_audit(
+                {
+                    "type": "memory.merge_reject",
+                    "tenant_id": ctx.tenant_id,
+                    "memory_id": memory_id,
+                    "outcome": "denied",
+                    "denial_reason": denial_reason,
+                }
+            )
+            return result
+        if state.tenant_id != ctx.tenant_id:
+            denial_reason = "tenant_scope_mismatch_default_deny"
+            result = self._mutation_result(outcome="denied", denial_reason=denial_reason)
+            self._emit_audit(
+                {
+                    "type": "memory.merge_reject",
+                    "tenant_id": ctx.tenant_id,
+                    "memory_id": memory_id,
+                    "outcome": "denied",
+                    "denial_reason": denial_reason,
+                }
+            )
+            return result
+        if state.last_event_type != "merge_proposed" or not state.conflict_open:
+            denial_reason = "merge_proposal_not_open"
+            result = self._mutation_result(outcome="denied", denial_reason=denial_reason)
+            self._emit_audit(
+                {
+                    "type": "memory.merge_reject",
+                    "tenant_id": ctx.tenant_id,
+                    "memory_id": memory_id,
+                    "outcome": "denied",
+                    "denial_reason": denial_reason,
+                }
+            )
+            return result
+        event = self._append_dynamic_event(
+            memory_id=memory_id,
+            event_type="merge_rejected",
+            actor=actor,
+            payload_hash=state.payload_hash,
+            trusted_context=trusted_context,
+            event_id=event_id,
+            timestamp=timestamp,
+            evidence_refs=evidence_refs,
+            resolution_reason=resolution_reason,
+        )
+        record = self._peek_record(
+            memory_id,
+            policy_context=policy_context,
+            trusted_context=trusted_context,
+        )
+        result = self._mutation_result(outcome="appended", record=record, event=event)
+        self._emit_audit(
+            {
+                "type": "memory.merge_reject",
+                "tenant_id": ctx.tenant_id,
+                "memory_id": memory_id,
                 "outcome": "appended",
                 "denial_reason": None,
                 "event_id": event.event_id,

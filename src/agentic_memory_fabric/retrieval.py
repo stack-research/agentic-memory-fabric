@@ -34,6 +34,10 @@ class RetrievalRecord:
     conflict_score: float
     related_memory_ids: tuple[str, ...]
     conflicted_memory_ids: tuple[str, ...]
+    conflict_open: bool
+    merged_into_memory_id: str | None
+    superseded_by_memory_id: str | None
+    resolved_from_memory_ids: tuple[str, ...]
     retrieval_score: float | None
     retrieval_mode: str | None
     indexed_event_id: str | None
@@ -91,6 +95,10 @@ def to_retrieval_record(
         conflict_score=state.conflict_score,
         related_memory_ids=state.related_memory_ids,
         conflicted_memory_ids=state.conflicted_memory_ids,
+        conflict_open=state.conflict_open,
+        merged_into_memory_id=state.merged_into_memory_id,
+        superseded_by_memory_id=state.superseded_by_memory_id,
+        resolved_from_memory_ids=state.resolved_from_memory_ids,
         retrieval_score=retrieval_score,
         retrieval_mode=retrieval_mode,
         indexed_event_id=indexed_event_id,

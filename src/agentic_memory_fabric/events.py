@@ -19,6 +19,9 @@ VALID_EVENT_TYPES = frozenset(
         "linked",
         "reinforced",
         "conflicted",
+        "merge_proposed",
+        "merge_approved",
+        "merge_rejected",
         "recalled",
         "reconsolidated",
         "quarantined",
@@ -279,6 +282,10 @@ class EventEnvelope:
     payload: Any | None = None
     promoted_from_memory_ids: tuple[str, ...] = field(default_factory=tuple)
     promoted_from_event_ids: tuple[str, ...] = field(default_factory=tuple)
+    resolved_from_memory_ids: tuple[str, ...] = field(default_factory=tuple)
+    resolved_from_event_ids: tuple[str, ...] = field(default_factory=tuple)
+    resolver_kind: str | None = None
+    resolution_reason: str | None = None
     target_memory_id: str | None = None
     edge_weight: float | None = None
     edge_reason: str | None = None
@@ -317,6 +324,10 @@ class EventEnvelope:
             payload=data.get("payload"),
             promoted_from_memory_ids=tuple(data.get("promoted_from_memory_ids", [])),
             promoted_from_event_ids=tuple(data.get("promoted_from_event_ids", [])),
+            resolved_from_memory_ids=tuple(data.get("resolved_from_memory_ids", [])),
+            resolved_from_event_ids=tuple(data.get("resolved_from_event_ids", [])),
+            resolver_kind=data.get("resolver_kind"),
+            resolution_reason=data.get("resolution_reason"),
             target_memory_id=data.get("target_memory_id"),
             edge_weight=data.get("edge_weight"),
             edge_reason=data.get("edge_reason"),
@@ -347,6 +358,14 @@ class EventEnvelope:
             out["promoted_from_memory_ids"] = list(self.promoted_from_memory_ids)
         if self.promoted_from_event_ids:
             out["promoted_from_event_ids"] = list(self.promoted_from_event_ids)
+        if self.resolved_from_memory_ids:
+            out["resolved_from_memory_ids"] = list(self.resolved_from_memory_ids)
+        if self.resolved_from_event_ids:
+            out["resolved_from_event_ids"] = list(self.resolved_from_event_ids)
+        if self.resolver_kind is not None:
+            out["resolver_kind"] = self.resolver_kind
+        if self.resolution_reason is not None:
+            out["resolution_reason"] = self.resolution_reason
         if self.target_memory_id is not None:
             out["target_memory_id"] = self.target_memory_id
         if self.edge_weight is not None:
@@ -445,6 +464,32 @@ def validate_event_envelope(data: Mapping[str, Any]) -> None:
         for item in promoted_from_event_ids:
             _as_uuid(item, field_name="promoted_from_event_ids[]")
 
+    resolved_from_memory_ids = data.get("resolved_from_memory_ids")
+    if resolved_from_memory_ids is not None:
+        if not isinstance(resolved_from_memory_ids, Sequence) or isinstance(
+            resolved_from_memory_ids, (str, bytes)
+        ):
+            raise ValueError("resolved_from_memory_ids must be an array when provided")
+        for item in resolved_from_memory_ids:
+            _as_uuid(item, field_name="resolved_from_memory_ids[]")
+
+    resolved_from_event_ids = data.get("resolved_from_event_ids")
+    if resolved_from_event_ids is not None:
+        if not isinstance(resolved_from_event_ids, Sequence) or isinstance(
+            resolved_from_event_ids, (str, bytes)
+        ):
+            raise ValueError("resolved_from_event_ids must be an array when provided")
+        for item in resolved_from_event_ids:
+            _as_uuid(item, field_name="resolved_from_event_ids[]")
+
+    resolver_kind = data.get("resolver_kind")
+    if resolver_kind is not None:
+        _require_non_empty_string(resolver_kind, field_name="resolver_kind")
+
+    resolution_reason = data.get("resolution_reason")
+    if resolution_reason is not None:
+        _require_non_empty_string(resolution_reason, field_name="resolution_reason")
+
     target_memory_id = data.get("target_memory_id")
     if target_memory_id is not None:
         _as_uuid(target_memory_id, field_name="target_memory_id")
@@ -513,6 +558,28 @@ def validate_event_envelope(data: Mapping[str, Any]) -> None:
     if event_type == "conflicted":
         if target_memory_id is None:
             raise ValueError("conflicted events must include target_memory_id")
+    if event_type == "merge_proposed":
+        if memory_class != "semantic":
+            raise ValueError("merge_proposed events must set memory_class to semantic")
+        if payload is None:
+            raise ValueError("merge_proposed events must include payload")
+        if not resolved_from_memory_ids or not resolved_from_event_ids:
+            raise ValueError(
+                "merge_proposed events must include resolved_from_memory_ids and resolved_from_event_ids"
+            )
+        if len(resolved_from_memory_ids) != len(resolved_from_event_ids):
+            raise ValueError(
+                "resolved_from_memory_ids and resolved_from_event_ids must have the same length"
+            )
+        if list(previous_events) != list(resolved_from_event_ids):
+            raise ValueError(
+                "merge_proposed events must use resolved_from_event_ids as previous_events"
+            )
+        if resolver_kind is None:
+            raise ValueError("merge_proposed events must include resolver_kind")
+    if event_type in {"merge_approved", "merge_rejected"}:
+        if payload is not None:
+            raise ValueError(f"{event_type} events must not replace payload")
     if event_type == "reinforced" and target_memory_id is None and edge_reason is None:
         # Keep the event small but still attributable when reinforcing without an edge.
         pass

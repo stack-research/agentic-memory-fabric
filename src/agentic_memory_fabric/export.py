@@ -41,6 +41,10 @@ def export_sbom_snapshot(
             "conflict_score": record.conflict_score,
             "related_memory_ids": list(record.related_memory_ids),
             "conflicted_memory_ids": list(record.conflicted_memory_ids),
+            "conflict_open": record.conflict_open,
+            "merged_into_memory_id": record.merged_into_memory_id,
+            "superseded_by_memory_id": record.superseded_by_memory_id,
+            "resolved_from_memory_ids": list(record.resolved_from_memory_ids),
             "denial_reason": record.denial_reason,
             "override_used": record.override_used,
         }

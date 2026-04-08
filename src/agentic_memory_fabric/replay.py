@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from .events import DEFAULT_MEMORY_CLASS, EventEnvelope, payload_to_retrieval_text
 from .graph import normalized_edge_weight
 from .promotion import compute_promotion_eligible, compute_promotion_score
+from .resolution import stable_conflict_set_id
 
 
 TRUSTED_EVENT_TYPES = {
@@ -18,7 +19,14 @@ TRUSTED_EVENT_TYPES = {
     "promoted",
     "reconsolidated",
 }
-CONTENT_VERSION_EVENT_TYPES = {"created", "updated", "imported", "promoted", "reconsolidated"}
+CONTENT_VERSION_EVENT_TYPES = {
+    "created",
+    "updated",
+    "imported",
+    "promoted",
+    "merge_proposed",
+    "reconsolidated",
+}
 LIFECYCLE_ACTIVE = "active"
 LIFECYCLE_DELETED = "deleted"
 
@@ -48,6 +56,11 @@ class MemoryState:
     related_memory_ids: tuple[str, ...] = ()
     conflicted_memory_ids: tuple[str, ...] = ()
     relationship_edges: tuple[tuple[str, str], ...] = ()
+    conflict_open: bool = False
+    conflict_set_id: str | None = None
+    merged_into_memory_id: str | None = None
+    superseded_by_memory_id: str | None = None
+    resolved_from_memory_ids: tuple[str, ...] = ()
     previous_events: tuple[str, ...] = ()
     lineage_depth: int = 0
     recall_count: int = 0
@@ -92,6 +105,11 @@ def replay_events(
         related_memory_ids = () if existing is None else existing.related_memory_ids
         conflicted_memory_ids = () if existing is None else existing.conflicted_memory_ids
         relationship_edges = () if existing is None else existing.relationship_edges
+        conflict_open = False if existing is None else existing.conflict_open
+        conflict_set_id = None if existing is None else existing.conflict_set_id
+        merged_into_memory_id = None if existing is None else existing.merged_into_memory_id
+        superseded_by_memory_id = None if existing is None else existing.superseded_by_memory_id
+        resolved_from_memory_ids = () if existing is None else existing.resolved_from_memory_ids
         current_tick = event.timestamp.tick if event.timestamp.tick is not None else event.sequence
 
         if event.memory_class is not None:
@@ -108,11 +126,19 @@ def replay_events(
             queryable_payload_present = event.payload is not None and retrieval_text is not None
             if event.event_type == "promoted":
                 promoted_from_memory_ids = event.promoted_from_memory_ids
+            elif event.event_type == "merge_proposed":
+                resolved_from_memory_ids = event.resolved_from_memory_ids
 
         if event.event_type == "quarantined":
             trust_state = "quarantined"
         elif event.event_type == "expired":
             trust_state = "expired"
+        elif event.event_type == "merge_proposed":
+            trust_state = "quarantined"
+        elif event.event_type == "merge_approved":
+            trust_state = "trusted"
+        elif event.event_type == "merge_rejected":
+            trust_state = "quarantined"
         elif event.event_type in TRUSTED_EVENT_TYPES:
             trust_state = "trusted"
         elif event.event_type == "deleted":
@@ -150,12 +176,27 @@ def replay_events(
             edge = (event.target_memory_id, "conflicted")
             if edge not in relationship_edges:
                 relationship_edges = relationship_edges + (edge,)
+            conflict_open = True
+            conflict_set_id = stable_conflict_set_id((event.memory_id, event.target_memory_id))
+        elif event.event_type == "merge_proposed":
+            conflict_open = True
+            conflict_set_id = stable_conflict_set_id(event.resolved_from_memory_ids)
+        elif event.event_type in {"merge_approved", "merge_rejected"}:
+            conflict_open = False
 
         lineage_depth += 1
 
         if (
             existing is not None
-            and event.event_type in {"recalled", "reconsolidated", "linked", "reinforced", "conflicted"}
+            and event.event_type in {
+                "recalled",
+                "reconsolidated",
+                "linked",
+                "reinforced",
+                "conflicted",
+                "merge_approved",
+                "merge_rejected",
+            }
             and event.signature is None
         ):
             signature_state = existing.signature_state
@@ -189,6 +230,11 @@ def replay_events(
                 related_memory_ids=related_memory_ids,
                 conflicted_memory_ids=conflicted_memory_ids,
                 relationship_edges=relationship_edges,
+                conflict_open=conflict_open,
+                conflict_set_id=conflict_set_id,
+                merged_into_memory_id=merged_into_memory_id,
+                superseded_by_memory_id=superseded_by_memory_id,
+                resolved_from_memory_ids=resolved_from_memory_ids,
                 previous_events=event.previous_events,
                 lineage_depth=lineage_depth,
                 recall_count=recall_count,
@@ -228,6 +274,11 @@ def replay_events(
                 related_memory_ids=related_memory_ids,
                 conflicted_memory_ids=conflicted_memory_ids,
                 relationship_edges=relationship_edges,
+                conflict_open=conflict_open,
+                conflict_set_id=conflict_set_id,
+                merged_into_memory_id=merged_into_memory_id,
+                superseded_by_memory_id=superseded_by_memory_id,
+                resolved_from_memory_ids=resolved_from_memory_ids,
                 previous_events=event.previous_events,
                 lineage_depth=lineage_depth,
                 recall_count=recall_count,
@@ -270,6 +321,11 @@ def replay_events(
             related_memory_ids=related_memory_ids,
             conflicted_memory_ids=conflicted_memory_ids,
             relationship_edges=relationship_edges,
+            conflict_open=conflict_open,
+            conflict_set_id=conflict_set_id,
+            merged_into_memory_id=merged_into_memory_id,
+            superseded_by_memory_id=superseded_by_memory_id,
+            resolved_from_memory_ids=resolved_from_memory_ids,
             previous_events=event.previous_events,
             lineage_depth=lineage_depth,
             recall_count=recall_count,
@@ -283,5 +339,18 @@ def replay_events(
             ),
             attestation_issuer=event.attestation.issuer if event.attestation is not None else None,
         )
+
+        if event.event_type == "merge_approved":
+            for source_memory_id in resolved_from_memory_ids:
+                source_state = materialized.get(source_memory_id)
+                if source_state is None:
+                    continue
+                materialized[source_memory_id] = replace(
+                    source_state,
+                    conflict_open=False,
+                    conflict_set_id=None,
+                    merged_into_memory_id=event.memory_id,
+                    superseded_by_memory_id=event.memory_id,
+                )
 
     return materialized

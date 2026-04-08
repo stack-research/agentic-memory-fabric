@@ -40,6 +40,14 @@ def explain(
             entry["promoted_from_memory_ids"] = list(event.promoted_from_memory_ids)
         if event.promoted_from_event_ids:
             entry["promoted_from_event_ids"] = list(event.promoted_from_event_ids)
+        if event.resolved_from_memory_ids:
+            entry["resolved_from_memory_ids"] = list(event.resolved_from_memory_ids)
+        if event.resolved_from_event_ids:
+            entry["resolved_from_event_ids"] = list(event.resolved_from_event_ids)
+        if event.resolver_kind is not None:
+            entry["resolver_kind"] = event.resolver_kind
+        if event.resolution_reason is not None:
+            entry["resolution_reason"] = event.resolution_reason
         if event.target_memory_id is not None:
             entry["target_memory_id"] = event.target_memory_id
         if event.edge_weight is not None:

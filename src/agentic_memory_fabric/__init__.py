@@ -51,6 +51,7 @@ from .policy import (
 from .promotion import PromotionAssessment, compute_promotion_eligible, compute_promotion_score
 from .query_index import InMemoryQueryIndex, QueryIndex, QueryIndexEntry, SearchHit
 from .replay import MemoryState, replay_events
+from .resolution import ConflictAssessment, DEFAULT_RESOLVER_KIND, stable_conflict_set_id
 from .retrieval import (
     GetOutcome,
     QueryAuditSummary,
@@ -85,6 +86,8 @@ __all__ = [
     "compute_promotion_score",
     "conflict_penalty",
     "DEFAULT_MEMORY_CLASS",
+    "DEFAULT_RESOLVER_KIND",
+    "ConflictAssessment",
     "DEFAULT_EDGE_WEIGHT",
     "GetOutcome",
     "DecayPolicy",
@@ -135,6 +138,7 @@ __all__ = [
     "replay_events",
     "run_cli",
     "run_http_server",
+    "stable_conflict_set_id",
     "normalized_edge_weight",
     "open_runtime",
     "payload_to_retrieval_text",

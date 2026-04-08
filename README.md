@@ -52,11 +52,15 @@ Example endpoints:
 - `POST /link`
 - `POST /reinforce`
 - `POST /conflict`
+- `POST /assess-conflict`
 - `POST /memory/{memory_id}/peek`
 - `POST /memory/{memory_id}/assess-promotion`
 - `POST /memory/{memory_id}/recall`
 - `POST /memory/{memory_id}/reconsolidate`
 - `POST /promote`
+- `POST /merge/propose`
+- `POST /merge/approve`
+- `POST /merge/reject`
 - `GET /memory/{memory_id}/explain`
 - `POST /export/snapshot`
 - `POST /export/provenance`
@@ -103,6 +107,20 @@ python3 -m agentic_memory_fabric.cli --state-file .amf-state.json query \
   --keyring-json '{"dev-key":{"key":"super-secret","status":"active"}}' \
   --query-text "memory fabric" \
   --graph-expand
+
+python3 -m agentic_memory_fabric.cli --state-file .amf-state.json assess-conflict \
+  --tenant-id tenant-alpha \
+  --keyring-json '{"dev-key":{"key":"super-secret","status":"active"}}' \
+  --memory-id aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa \
+  --related-memory-id bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb
+
+python3 -m agentic_memory_fabric.cli --state-file .amf-state.json merge-propose \
+  --tenant-id tenant-alpha \
+  --keyring-json '{"dev-key":{"key":"super-secret","status":"active"}}' \
+  --memory-ids-json '["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]' \
+  --actor-json '{"id":"reviewer","kind":"user"}' \
+  --payload-json '{"topic":"merged memory fabric"}' \
+  --resolver-kind human_gate
 
 python3 -m agentic_memory_fabric.cli --state-file .amf-state.json recall \
   --tenant-id tenant-alpha \
@@ -159,6 +177,19 @@ Structured filters now also support:
 - `min_reinforcement_score`
 - `max_conflict_score`
 
+## Governed Conflict Resolution
+
+Conflict is now a first-class workflow, not just a ranking signal. AMF can assess whether conflicting memories are currently resolvable under policy, create quarantined merge proposals, and then explicitly approve or reject those proposals without rewriting source histories.
+
+Merge proposal and resolution records extend the read model with:
+
+- `conflict_open`
+- `merged_into_memory_id`
+- `superseded_by_memory_id`
+- `resolved_from_memory_ids`
+
+`merge_proposed` creates a semantic candidate memory that is quarantined by default. `merge_approved` flips that candidate to trusted and links each source memory to the merged result through `merged_into_memory_id` and `superseded_by_memory_id`. `merge_rejected` closes the proposal without superseding the sources.
+
 ## Explicit Memory Classes and Promotion
 
 AMF now distinguishes `episodic` and `semantic` memories explicitly. Legacy memories replay as `episodic` by default. Promotion is an explicit control-plane operation that creates a new semantic memory with provenance links back to the source episodic memories; it does not mutate the source memory into a different class and it does not trigger model training.
@@ -203,10 +234,14 @@ Current event types include:
 - `memory.link`
 - `memory.reinforce`
 - `memory.conflict`
+- `memory.assess_conflict`
 - `memory.assess_promotion`
 - `memory.recall`
 - `memory.reconsolidate`
 - `memory.promote`
+- `memory.merge_propose`
+- `memory.merge_approve`
+- `memory.merge_reject`
 - `memory.explain`
 - `memory.export.snapshot`
 - `memory.export.provenance`

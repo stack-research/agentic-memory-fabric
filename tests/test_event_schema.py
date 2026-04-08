@@ -34,6 +34,7 @@ class EventSchemaTests(unittest.TestCase):
             "event-envelope.v2.json",
             "event-envelope.v3.json",
             "event-envelope.v4.json",
+            "event-envelope.v5.json",
         ):
             schema_path = PROJECT_ROOT / "schemas" / schema_name
             schema = json.loads(schema_path.read_text(encoding="utf-8"))
@@ -76,6 +77,14 @@ class EventSchemaTests(unittest.TestCase):
                 self.assertIn("target_memory_id", schema["properties"])
                 self.assertIn("edge_weight", schema["properties"])
                 self.assertIn("edge_reason", schema["properties"])
+            if schema_name.endswith("v5.json"):
+                self.assertIn("merge_proposed", event_types)
+                self.assertIn("merge_approved", event_types)
+                self.assertIn("merge_rejected", event_types)
+                self.assertIn("resolved_from_memory_ids", schema["properties"])
+                self.assertIn("resolved_from_event_ids", schema["properties"])
+                self.assertIn("resolver_kind", schema["properties"])
+                self.assertIn("resolution_reason", schema["properties"])
             self.assertIn("signature", schema["properties"])
             self.assertIn("attestation", schema["properties"])
             self.assertIn("ed25519", schema["properties"]["signature"]["properties"]["alg"]["enum"])
@@ -187,4 +196,54 @@ class EventSchemaTests(unittest.TestCase):
             "previous_events": ["33333333-3333-4333-8333-333333333333"],
         }
         with self.assertRaisesRegex(ValueError, "target_memory_id"):
+            validate_event_envelope(event)
+
+    def test_validate_event_envelope_accepts_merge_proposed_event(self) -> None:
+        payload = {"topic": "merged semantic"}
+        event = {
+            **_valid_event(),
+            "memory_id": "55555555-5555-4555-8555-555555555555",
+            "event_type": "merge_proposed",
+            "memory_class": "semantic",
+            "payload": payload,
+            "payload_hash": canonical_payload_hash(payload),
+            "previous_events": [
+                "33333333-3333-4333-8333-333333333333",
+                "44444444-4444-4444-8444-444444444444",
+            ],
+            "resolved_from_memory_ids": [
+                "22222222-2222-4222-8222-222222222222",
+                "66666666-6666-4666-8666-666666666666",
+            ],
+            "resolved_from_event_ids": [
+                "33333333-3333-4333-8333-333333333333",
+                "44444444-4444-4444-8444-444444444444",
+            ],
+            "resolver_kind": "human_gate",
+        }
+        validate_event_envelope(event)
+
+    def test_validate_event_envelope_rejects_merge_proposed_without_resolver(self) -> None:
+        payload = {"topic": "merged semantic"}
+        event = {
+            **_valid_event(),
+            "memory_id": "55555555-5555-4555-8555-555555555555",
+            "event_type": "merge_proposed",
+            "memory_class": "semantic",
+            "payload": payload,
+            "payload_hash": canonical_payload_hash(payload),
+            "previous_events": [
+                "33333333-3333-4333-8333-333333333333",
+                "44444444-4444-4444-8444-444444444444",
+            ],
+            "resolved_from_memory_ids": [
+                "22222222-2222-4222-8222-222222222222",
+                "66666666-6666-4666-8666-666666666666",
+            ],
+            "resolved_from_event_ids": [
+                "33333333-3333-4333-8333-333333333333",
+                "44444444-4444-4444-8444-444444444444",
+            ],
+        }
+        with self.assertRaisesRegex(ValueError, "resolver_kind"):
             validate_event_envelope(event)

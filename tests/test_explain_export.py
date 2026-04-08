@@ -25,6 +25,10 @@ def _event(
     memory_class: str | None = None,
     promoted_from_memory_ids: list[str] | None = None,
     promoted_from_event_ids: list[str] | None = None,
+    resolved_from_memory_ids: list[str] | None = None,
+    resolved_from_event_ids: list[str] | None = None,
+    resolver_kind: str | None = None,
+    resolution_reason: str | None = None,
     target_memory_id: str | None = None,
     edge_weight: float | None = None,
     edge_reason: str | None = None,
@@ -55,6 +59,22 @@ def _event(
             **(
                 {"promoted_from_event_ids": promoted_from_event_ids}
                 if promoted_from_event_ids is not None
+                else {}
+            ),
+            **(
+                {"resolved_from_memory_ids": resolved_from_memory_ids}
+                if resolved_from_memory_ids is not None
+                else {}
+            ),
+            **(
+                {"resolved_from_event_ids": resolved_from_event_ids}
+                if resolved_from_event_ids is not None
+                else {}
+            ),
+            **({"resolver_kind": resolver_kind} if resolver_kind is not None else {}),
+            **(
+                {"resolution_reason": resolution_reason}
+                if resolution_reason is not None
                 else {}
             ),
             **({"target_memory_id": target_memory_id} if target_memory_id is not None else {}),
@@ -283,3 +303,84 @@ class ExplainExportTests(unittest.TestCase):
         )
         self.assertEqual(source_record["related_memory_ids"], [target.memory_id])
         self.assertEqual(source_record["reinforcement_score"], 2.0)
+
+    def test_explain_and_snapshot_include_merge_resolution_fields(self) -> None:
+        left = _event(
+            1,
+            "11111111-1111-4111-8111-111111111111",
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "created",
+            [],
+            payload={"topic": "alpha"},
+        )
+        right = _event(
+            2,
+            "22222222-2222-4222-8222-222222222222",
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            "created",
+            [],
+            payload={"topic": "bravo"},
+        )
+        conflict = _event(
+            3,
+            "33333333-3333-4333-8333-333333333333",
+            "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+            "conflicted",
+            [left.event_id],
+            target_memory_id=right.memory_id,
+        )
+        proposal = _event(
+            4,
+            "44444444-4444-4444-8444-444444444444",
+            "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            "merge_proposed",
+            [conflict.event_id, right.event_id],
+            payload={"topic": "merged"},
+            memory_class="semantic",
+            resolved_from_memory_ids=[left.memory_id, right.memory_id],
+            resolved_from_event_ids=[conflict.event_id, right.event_id],
+            resolver_kind="human_gate",
+        )
+        approval = EventEnvelope.from_dict(
+            {
+                "event_id": "55555555-5555-4555-8555-555555555555",
+                "sequence": 5,
+                "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 5},
+                "actor": {"id": "svc-memory", "kind": "service"},
+                "tenant_id": "tenant-alpha",
+                "memory_id": proposal.memory_id,
+                "event_type": "merge_approved",
+                "previous_events": [proposal.event_id],
+                "payload_hash": canonical_payload_hash({"topic": "merged"}),
+                "resolution_reason": "approved by reviewer",
+            }
+        )
+        trace = explain(proposal.memory_id, [left, right, conflict, proposal, approval])
+        self.assertEqual(trace[0]["resolved_from_memory_ids"], [left.memory_id, right.memory_id])
+        self.assertEqual(trace[0]["resolver_kind"], "human_gate")
+        self.assertEqual(trace[1]["resolution_reason"], "approved by reviewer")
+
+        state_map = replay_events(
+            [left, right, conflict, proposal, approval],
+            signature_states={
+                left.event_id: "verified",
+                right.event_id: "verified",
+                conflict.event_id: "verified",
+                proposal.event_id: "verified",
+                approval.event_id: "verified",
+            },
+        )
+        snapshot = export_sbom_snapshot(
+            state_map,
+            PolicyContext(
+                capabilities=frozenset({OVERRIDE_CAPABILITY}),
+                tenant_id="tenant-alpha",
+                trusted_subject=True,
+            ),
+        )
+        left_record = next(record for record in snapshot["records"] if record["memory_id"] == left.memory_id)
+        merged_record = next(record for record in snapshot["records"] if record["memory_id"] == proposal.memory_id)
+        self.assertEqual(left_record["merged_into_memory_id"], proposal.memory_id)
+        self.assertEqual(left_record["superseded_by_memory_id"], proposal.memory_id)
+        self.assertFalse(merged_record["conflict_open"])
+        self.assertEqual(merged_record["resolved_from_memory_ids"], [left.memory_id, right.memory_id])

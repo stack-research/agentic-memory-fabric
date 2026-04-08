@@ -126,6 +126,11 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
     p_assess.add_argument("--memory-id", required=True)
     p_assess.add_argument("--policy-json", default="{}")
 
+    p_assess_conflict = sub.add_parser("assess-conflict")
+    p_assess_conflict.add_argument("--memory-id", required=True)
+    p_assess_conflict.add_argument("--related-memory-id", required=True)
+    p_assess_conflict.add_argument("--policy-json", default="{}")
+
     p_recall = sub.add_parser("recall")
     p_recall.add_argument("--memory-id", required=True)
     p_recall.add_argument("--actor-json", required=True)
@@ -183,6 +188,36 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
     p_promote.add_argument("--event-id", default=None)
     p_promote.add_argument("--timestamp-json", default=None)
     p_promote.add_argument("--evidence-refs-json", default=None)
+
+    p_merge_propose = sub.add_parser("merge-propose")
+    p_merge_propose.add_argument("--memory-ids-json", required=True)
+    p_merge_propose.add_argument("--actor-json", required=True)
+    p_merge_propose.add_argument("--payload-json", required=True)
+    p_merge_propose.add_argument("--resolver-kind", default="human_gate")
+    p_merge_propose.add_argument("--resolution-reason", default=None)
+    p_merge_propose.add_argument("--policy-json", default="{}")
+    p_merge_propose.add_argument("--merged-memory-id", default=None)
+    p_merge_propose.add_argument("--event-id", default=None)
+    p_merge_propose.add_argument("--timestamp-json", default=None)
+    p_merge_propose.add_argument("--evidence-refs-json", default=None)
+
+    p_merge_approve = sub.add_parser("merge-approve")
+    p_merge_approve.add_argument("--memory-id", required=True)
+    p_merge_approve.add_argument("--actor-json", required=True)
+    p_merge_approve.add_argument("--policy-json", default="{}")
+    p_merge_approve.add_argument("--event-id", default=None)
+    p_merge_approve.add_argument("--timestamp-json", default=None)
+    p_merge_approve.add_argument("--evidence-refs-json", default=None)
+    p_merge_approve.add_argument("--resolution-reason", default=None)
+
+    p_merge_reject = sub.add_parser("merge-reject")
+    p_merge_reject.add_argument("--memory-id", required=True)
+    p_merge_reject.add_argument("--actor-json", required=True)
+    p_merge_reject.add_argument("--policy-json", default="{}")
+    p_merge_reject.add_argument("--event-id", default=None)
+    p_merge_reject.add_argument("--timestamp-json", default=None)
+    p_merge_reject.add_argument("--evidence-refs-json", default=None)
+    p_merge_reject.add_argument("--resolution-reason", default=None)
 
     p_explain = sub.add_parser("explain")
     p_explain.add_argument("--memory-id", required=True)
@@ -294,6 +329,20 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
             policy_context["tenant_id"] = args.tenant_id
             assessment = runtime.assess_promotion(
                 args.memory_id,
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+            )
+            out.write(json.dumps(assessment, sort_keys=True) + "\n")
+            return 0
+
+        if args.command == "assess-conflict":
+            policy_context = _load_json_arg(args.policy_json)
+            if not isinstance(policy_context, dict):
+                raise ValueError("--policy-json must decode to a JSON object")
+            policy_context["tenant_id"] = args.tenant_id
+            assessment = runtime.assess_conflict(
+                args.memory_id,
+                args.related_memory_id,
                 policy_context=policy_context,
                 trusted_context=trusted_context,
             )
@@ -447,6 +496,87 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
                     if args.evidence_refs_json is not None
                     else None
                 ),
+            )
+            if state_path is not None and result["outcome"] == "appended":
+                _save_state(state_path, runtime)
+            out.write(json.dumps(result, sort_keys=True) + "\n")
+            return 0
+
+        if args.command == "merge-propose":
+            policy_context = _load_json_arg(args.policy_json)
+            if not isinstance(policy_context, dict):
+                raise ValueError("--policy-json must decode to a JSON object")
+            policy_context["tenant_id"] = args.tenant_id
+            result = runtime.propose_merge(
+                _load_json_arg(args.memory_ids_json),
+                actor=_load_json_arg(args.actor_json),
+                payload=_load_json_arg(args.payload_json),
+                resolver_kind=args.resolver_kind,
+                resolution_reason=args.resolution_reason,
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+                merged_memory_id=args.merged_memory_id,
+                event_id=args.event_id,
+                timestamp=(
+                    _load_json_arg(args.timestamp_json) if args.timestamp_json is not None else None
+                ),
+                evidence_refs=(
+                    _load_json_arg(args.evidence_refs_json)
+                    if args.evidence_refs_json is not None
+                    else None
+                ),
+            )
+            if state_path is not None and result["outcome"] == "appended":
+                _save_state(state_path, runtime)
+            out.write(json.dumps(result, sort_keys=True) + "\n")
+            return 0
+
+        if args.command == "merge-approve":
+            policy_context = _load_json_arg(args.policy_json)
+            if not isinstance(policy_context, dict):
+                raise ValueError("--policy-json must decode to a JSON object")
+            policy_context["tenant_id"] = args.tenant_id
+            result = runtime.approve_merge(
+                args.memory_id,
+                actor=_load_json_arg(args.actor_json),
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+                event_id=args.event_id,
+                timestamp=(
+                    _load_json_arg(args.timestamp_json) if args.timestamp_json is not None else None
+                ),
+                evidence_refs=(
+                    _load_json_arg(args.evidence_refs_json)
+                    if args.evidence_refs_json is not None
+                    else None
+                ),
+                resolution_reason=args.resolution_reason,
+            )
+            if state_path is not None and result["outcome"] == "appended":
+                _save_state(state_path, runtime)
+            out.write(json.dumps(result, sort_keys=True) + "\n")
+            return 0
+
+        if args.command == "merge-reject":
+            policy_context = _load_json_arg(args.policy_json)
+            if not isinstance(policy_context, dict):
+                raise ValueError("--policy-json must decode to a JSON object")
+            policy_context["tenant_id"] = args.tenant_id
+            result = runtime.reject_merge(
+                args.memory_id,
+                actor=_load_json_arg(args.actor_json),
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+                event_id=args.event_id,
+                timestamp=(
+                    _load_json_arg(args.timestamp_json) if args.timestamp_json is not None else None
+                ),
+                evidence_refs=(
+                    _load_json_arg(args.evidence_refs_json)
+                    if args.evidence_refs_json is not None
+                    else None
+                ),
+                resolution_reason=args.resolution_reason,
             )
             if state_path is not None and result["outcome"] == "appended":
                 _save_state(state_path, runtime)

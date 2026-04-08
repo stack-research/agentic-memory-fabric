@@ -26,6 +26,10 @@ def _event(
     memory_class: str | None = None,
     promoted_from_memory_ids: list[str] | None = None,
     promoted_from_event_ids: list[str] | None = None,
+    resolved_from_memory_ids: list[str] | None = None,
+    resolved_from_event_ids: list[str] | None = None,
+    resolver_kind: str | None = None,
+    resolution_reason: str | None = None,
     target_memory_id: str | None = None,
     edge_weight: float | None = None,
     edge_reason: str | None = None,
@@ -54,6 +58,14 @@ def _event(
         event_data["promoted_from_memory_ids"] = promoted_from_memory_ids
     if promoted_from_event_ids is not None:
         event_data["promoted_from_event_ids"] = promoted_from_event_ids
+    if resolved_from_memory_ids is not None:
+        event_data["resolved_from_memory_ids"] = resolved_from_memory_ids
+    if resolved_from_event_ids is not None:
+        event_data["resolved_from_event_ids"] = resolved_from_event_ids
+    if resolver_kind is not None:
+        event_data["resolver_kind"] = resolver_kind
+    if resolution_reason is not None:
+        event_data["resolution_reason"] = resolution_reason
     if target_memory_id is not None:
         event_data["target_memory_id"] = target_memory_id
     if edge_weight is not None:
@@ -323,6 +335,70 @@ class LogReplayTests(unittest.TestCase):
         self.assertEqual(state.relationship_edges, ((target, "linked"), (target, "reinforced"), (target, "conflicted")))
         self.assertEqual(state.reinforcement_score, 2.0)
         self.assertEqual(state.conflict_score, 1.5)
+
+    def test_merge_resolution_events_materialize_resolution_state(self) -> None:
+        left = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        right = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        merged = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        left_created = _event(
+            1,
+            "11111111-1111-4111-8111-111111111111",
+            "created",
+            [],
+            payload={"topic": "alpha"},
+            memory_id=left,
+        )
+        right_created = _event(
+            2,
+            "22222222-2222-4222-8222-222222222222",
+            "created",
+            [],
+            payload={"topic": "bravo"},
+            memory_id=right,
+        )
+        conflict = _event(
+            3,
+            "33333333-3333-4333-8333-333333333333",
+            "conflicted",
+            [left_created.event_id],
+            payload={"topic": "alpha"},
+            memory_id=left,
+            target_memory_id=right,
+        )
+        proposal = _event(
+            4,
+            "44444444-4444-4444-8444-444444444444",
+            "merge_proposed",
+            [conflict.event_id, right_created.event_id],
+            payload={"topic": "merged"},
+            memory_id=merged,
+            memory_class="semantic",
+            resolved_from_memory_ids=[left, right],
+            resolved_from_event_ids=[conflict.event_id, right_created.event_id],
+            resolver_kind="human_gate",
+        )
+        # Build the approval event manually to preserve payload_hash without payload replacement.
+        approved = EventEnvelope.from_dict(
+            {
+                "event_id": "55555555-5555-4555-8555-555555555555",
+                "sequence": 5,
+                "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 5},
+                "actor": {"id": "svc-memory", "kind": "service"},
+                "tenant_id": "tenant-alpha",
+                "memory_id": merged,
+                "event_type": "merge_approved",
+                "previous_events": [proposal.event_id],
+                "payload_hash": canonical_payload_hash({"topic": "merged"}),
+                "resolution_reason": "reviewed",
+            }
+        )
+        state_map = replay_events([left_created, right_created, conflict, proposal, approved])
+        merged_state = state_map[merged]
+        self.assertFalse(merged_state.conflict_open)
+        self.assertEqual(merged_state.resolved_from_memory_ids, (left, right))
+        self.assertEqual(merged_state.memory_class, "semantic")
+        self.assertEqual(state_map[left].merged_into_memory_id, merged)
+        self.assertEqual(state_map[left].superseded_by_memory_id, merged)
 
     def test_replay_materializes_attestation_fields(self) -> None:
         attested = _event(

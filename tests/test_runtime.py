@@ -27,6 +27,10 @@ def _event(
     memory_class: str | None = None,
     promoted_from_memory_ids: list[str] | None = None,
     promoted_from_event_ids: list[str] | None = None,
+    resolved_from_memory_ids: list[str] | None = None,
+    resolved_from_event_ids: list[str] | None = None,
+    resolver_kind: str | None = None,
+    resolution_reason: str | None = None,
     target_memory_id: str | None = None,
     edge_weight: float | None = None,
     edge_reason: str | None = None,
@@ -55,6 +59,14 @@ def _event(
         event["promoted_from_memory_ids"] = promoted_from_memory_ids
     if promoted_from_event_ids is not None:
         event["promoted_from_event_ids"] = promoted_from_event_ids
+    if resolved_from_memory_ids is not None:
+        event["resolved_from_memory_ids"] = resolved_from_memory_ids
+    if resolved_from_event_ids is not None:
+        event["resolved_from_event_ids"] = resolved_from_event_ids
+    if resolver_kind is not None:
+        event["resolver_kind"] = resolver_kind
+    if resolution_reason is not None:
+        event["resolution_reason"] = resolution_reason
     if target_memory_id is not None:
         event["target_memory_id"] = target_memory_id
     if edge_weight is not None:
@@ -850,3 +862,206 @@ class RuntimeReadModelTests(unittest.TestCase):
         )
         self.assertEqual(filtered["count"], 1)
         self.assertEqual(filtered["records"][0]["memory_id"], first)
+
+    def test_assess_conflict_and_merge_resolution_flow(self) -> None:
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        left = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        right = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        merged = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        runtime.ingest_event(
+            _signed_event(
+                sequence=1,
+                event_id="11111111-1111-4111-8111-111111111111",
+                event_type="created",
+                previous_events=[],
+                payload={"topic": "alpha"},
+                memory_id=left,
+            ),
+            expected_tenant_id="tenant-alpha",
+            trusted_context={"tenant_id": "tenant-alpha"},
+        )
+        runtime.ingest_event(
+            _signed_event(
+                sequence=2,
+                event_id="22222222-2222-4222-8222-222222222222",
+                event_type="created",
+                previous_events=[],
+                payload={"topic": "bravo"},
+                memory_id=right,
+            ),
+            expected_tenant_id="tenant-alpha",
+            trusted_context={"tenant_id": "tenant-alpha"},
+        )
+        runtime.conflict(
+            left,
+            right,
+            actor={"id": "svc-memory", "kind": "service"},
+            policy_context={"tenant_id": "tenant-alpha"},
+            trusted_context={"tenant_id": "tenant-alpha"},
+            event_id="33333333-3333-4333-8333-333333333333",
+            timestamp={"wall_time": "2026-03-22T00:00:00Z", "tick": 3},
+        )
+        assessment = runtime.assess_conflict(
+            left,
+            right,
+            policy_context={"tenant_id": "tenant-alpha"},
+            trusted_context={"tenant_id": "tenant-alpha"},
+        )
+        self.assertTrue(assessment["resolvable"])
+        self.assertIsNotNone(assessment["conflict_set_id"])
+
+        proposed = runtime.propose_merge(
+            [left, right],
+            actor={"id": "reviewer", "kind": "user"},
+            payload={"topic": "merged"},
+            policy_context={"tenant_id": "tenant-alpha"},
+            trusted_context={"tenant_id": "tenant-alpha"},
+            merged_memory_id=merged,
+            event_id="44444444-4444-4444-8444-444444444444",
+            timestamp={"wall_time": "2026-03-22T00:00:00Z", "tick": 4},
+        )
+        self.assertEqual(proposed["outcome"], "appended")
+        self.assertEqual(proposed["event"]["event_type"], "merge_proposed")
+        proposal_query = runtime.query(
+            policy_context={"tenant_id": "tenant-alpha"},
+            trusted_context={"tenant_id": "tenant-alpha"},
+            structured_filter={"memory_id": merged},
+        )
+        self.assertEqual(proposal_query["count"], 0)
+
+        approved = runtime.approve_merge(
+            merged,
+            actor={"id": "reviewer", "kind": "user"},
+            policy_context={"tenant_id": "tenant-alpha"},
+            trusted_context={"tenant_id": "tenant-alpha"},
+            event_id="55555555-5555-4555-8555-555555555555",
+            timestamp={"wall_time": "2026-03-22T00:00:00Z", "tick": 5},
+            resolution_reason="approved",
+        )
+        self.assertEqual(approved["outcome"], "appended")
+        self.assertEqual(approved["event"]["event_type"], "merge_approved")
+        state_map = runtime.state_map()
+        self.assertEqual(state_map[left].merged_into_memory_id, merged)
+        self.assertEqual(state_map[left].superseded_by_memory_id, merged)
+        self.assertFalse(state_map[merged].conflict_open)
+
+        query = runtime.query(
+            policy_context={"tenant_id": "tenant-alpha"},
+            trusted_context={
+                "tenant_id": "tenant-alpha",
+                "capabilities": ["override_retrieval_denials"],
+            },
+            structured_filter={"merged_into_memory_id": merged},
+        )
+        self.assertEqual(query["count"], 2)
+        self.assertEqual(
+            {record["memory_id"] for record in query["records"]},
+            {left, right},
+        )
+
+    def test_merge_reject_leaves_sources_unsuperseded(self) -> None:
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        left = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+        right = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+        merged = "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        runtime.ingest_event(
+            _signed_event(
+                sequence=1,
+                event_id="11111111-1111-4111-8111-111111111111",
+                event_type="created",
+                previous_events=[],
+                payload={"topic": "alpha"},
+                memory_id=left,
+            ),
+            expected_tenant_id="tenant-alpha",
+            trusted_context={"tenant_id": "tenant-alpha"},
+        )
+        runtime.ingest_event(
+            _signed_event(
+                sequence=2,
+                event_id="22222222-2222-4222-8222-222222222222",
+                event_type="created",
+                previous_events=[],
+                payload={"topic": "bravo"},
+                memory_id=right,
+            ),
+            expected_tenant_id="tenant-alpha",
+            trusted_context={"tenant_id": "tenant-alpha"},
+        )
+        runtime.conflict(
+            left,
+            right,
+            actor={"id": "svc-memory", "kind": "service"},
+            policy_context={"tenant_id": "tenant-alpha"},
+            trusted_context={"tenant_id": "tenant-alpha"},
+            event_id="33333333-3333-4333-8333-333333333333",
+            timestamp={"wall_time": "2026-03-22T00:00:00Z", "tick": 3},
+        )
+        runtime.propose_merge(
+            [left, right],
+            actor={"id": "reviewer", "kind": "user"},
+            payload={"topic": "merged"},
+            policy_context={"tenant_id": "tenant-alpha"},
+            trusted_context={"tenant_id": "tenant-alpha"},
+            merged_memory_id=merged,
+            event_id="44444444-4444-4444-8444-444444444444",
+            timestamp={"wall_time": "2026-03-22T00:00:00Z", "tick": 4},
+        )
+        rejected = runtime.reject_merge(
+            merged,
+            actor={"id": "reviewer", "kind": "user"},
+            policy_context={"tenant_id": "tenant-alpha"},
+            trusted_context={"tenant_id": "tenant-alpha"},
+            event_id="55555555-5555-4555-8555-555555555555",
+            timestamp={"wall_time": "2026-03-22T00:00:00Z", "tick": 5},
+            resolution_reason="not enough evidence",
+        )
+        self.assertEqual(rejected["outcome"], "appended")
+        self.assertEqual(rejected["event"]["event_type"], "merge_rejected")
+        self.assertIsNone(runtime.state_map()[left].merged_into_memory_id)
+        self.assertIsNone(runtime.state_map()[left].superseded_by_memory_id)
+
+    def test_propose_merge_denies_cross_tenant_sources(self) -> None:
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        runtime.ingest_event(
+            _signed_event(
+                sequence=1,
+                event_id="11111111-1111-4111-8111-111111111111",
+                event_type="created",
+                previous_events=[],
+                payload={"topic": "alpha"},
+            ),
+            expected_tenant_id="tenant-alpha",
+            trusted_context={"tenant_id": "tenant-alpha"},
+        )
+        runtime.ingest_event(
+            _event(
+                sequence=2,
+                event_id="22222222-2222-4222-8222-222222222222",
+                event_type="created",
+                previous_events=[],
+                payload={"topic": "bravo"},
+                memory_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                tenant_id="tenant-bravo",
+            ),
+            expected_tenant_id="tenant-bravo",
+            trusted_context={"tenant_id": "tenant-bravo"},
+        )
+        denied = runtime.propose_merge(
+            [
+                "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            ],
+            actor={"id": "reviewer", "kind": "user"},
+            payload={"topic": "merged"},
+            policy_context={"tenant_id": "tenant-alpha"},
+            trusted_context={"tenant_id": "tenant-alpha"},
+            merged_memory_id="cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+            event_id="33333333-3333-4333-8333-333333333333",
+            timestamp={"wall_time": "2026-03-22T00:00:00Z", "tick": 3},
+        )
+        self.assertEqual(denied["outcome"], "denied")
+        self.assertIn(
+            "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+            denied["source_denials"],
+        )

@@ -763,6 +763,289 @@ class CliTests(unittest.TestCase):
             self.assertEqual(payload["records"][1]["memory_id"], "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
             self.assertEqual(payload["records"][1]["retrieval_mode"], "graph_expand_v1")
 
+    def test_cli_conflict_assess_and_merge_commands(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = str(pathlib.Path(tmpdir) / "state.json")
+            keyring_json = '{"dev-key":{"key":"super-secret","status":"active"}}'
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "ingest-event",
+                    "--event-json",
+                    self._signed_event_json(payload={"topic": "alpha"}),
+                ],
+                stdout=io.StringIO(),
+            )
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "ingest-event",
+                    "--event-json",
+                    self._signed_event_json(
+                        sequence=2,
+                        event_id="22222222-2222-4222-8222-222222222222",
+                        payload={"topic": "bravo"},
+                        memory_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    ),
+                ],
+                stdout=io.StringIO(),
+            )
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "conflict",
+                    "--source-memory-id",
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "--target-memory-id",
+                    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    "--actor-json",
+                    '{"id":"svc-memory","kind":"service"}',
+                    "--event-id",
+                    "33333333-3333-4333-8333-333333333333",
+                    "--timestamp-json",
+                    '{"wall_time":"2026-03-22T00:00:00Z","tick":3}',
+                ],
+                stdout=io.StringIO(),
+            )
+            out_assess = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "assess-conflict",
+                    "--memory-id",
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "--related-memory-id",
+                    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                ],
+                stdout=out_assess,
+            )
+            assess_payload = json.loads(out_assess.getvalue())
+            self.assertTrue(assess_payload["resolvable"])
+            out_propose = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "merge-propose",
+                    "--memory-ids-json",
+                    '["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]',
+                    "--actor-json",
+                    '{"id":"reviewer","kind":"user"}',
+                    "--payload-json",
+                    '{"topic":"merged"}',
+                    "--merged-memory-id",
+                    "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                    "--event-id",
+                    "44444444-4444-4444-8444-444444444444",
+                    "--timestamp-json",
+                    '{"wall_time":"2026-03-22T00:00:00Z","tick":4}',
+                ],
+                stdout=out_propose,
+            )
+            propose_payload = json.loads(out_propose.getvalue())
+            self.assertEqual(propose_payload["event"]["event_type"], "merge_proposed")
+            out_approve = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "merge-approve",
+                    "--memory-id",
+                    "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                    "--actor-json",
+                    '{"id":"reviewer","kind":"user"}',
+                    "--event-id",
+                    "55555555-5555-4555-8555-555555555555",
+                    "--timestamp-json",
+                    '{"wall_time":"2026-03-22T00:00:00Z","tick":5}',
+                ],
+                stdout=out_approve,
+            )
+            approve_payload = json.loads(out_approve.getvalue())
+            self.assertEqual(approve_payload["event"]["event_type"], "merge_approved")
+
+    def test_cli_merge_reject_and_cross_tenant_denial(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = str(pathlib.Path(tmpdir) / "state.json")
+            keyring_json = '{"dev-key":{"key":"super-secret","status":"active"}}'
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "ingest-event",
+                    "--event-json",
+                    self._signed_event_json(payload={"topic": "alpha"}),
+                ],
+                stdout=io.StringIO(),
+            )
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "ingest-event",
+                    "--event-json",
+                    self._signed_event_json(
+                        sequence=2,
+                        event_id="22222222-2222-4222-8222-222222222222",
+                        payload={"topic": "bravo"},
+                        memory_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    ),
+                ],
+                stdout=io.StringIO(),
+            )
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "conflict",
+                    "--source-memory-id",
+                    "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "--target-memory-id",
+                    "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    "--actor-json",
+                    '{"id":"svc-memory","kind":"service"}',
+                    "--event-id",
+                    "33333333-3333-4333-8333-333333333333",
+                    "--timestamp-json",
+                    '{"wall_time":"2026-03-22T00:00:00Z","tick":3}',
+                ],
+                stdout=io.StringIO(),
+            )
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "merge-propose",
+                    "--memory-ids-json",
+                    '["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"]',
+                    "--actor-json",
+                    '{"id":"reviewer","kind":"user"}',
+                    "--payload-json",
+                    '{"topic":"merged"}',
+                    "--merged-memory-id",
+                    "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                    "--event-id",
+                    "44444444-4444-4444-8444-444444444444",
+                    "--timestamp-json",
+                    '{"wall_time":"2026-03-22T00:00:00Z","tick":4}',
+                ],
+                stdout=io.StringIO(),
+            )
+            out_reject = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "merge-reject",
+                    "--memory-id",
+                    "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                    "--actor-json",
+                    '{"id":"reviewer","kind":"user"}',
+                    "--event-id",
+                    "55555555-5555-4555-8555-555555555555",
+                    "--timestamp-json",
+                    '{"wall_time":"2026-03-22T00:00:00Z","tick":5}',
+                ],
+                stdout=out_reject,
+            )
+            reject_payload = json.loads(out_reject.getvalue())
+            self.assertEqual(reject_payload["event"]["event_type"], "merge_rejected")
+
+            bravo_event = json.loads(
+                self._signed_event_json(
+                    sequence=6,
+                    event_id="66666666-6666-4666-8666-666666666666",
+                    payload={"topic": "charlie"},
+                    memory_id="dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+                )
+            )
+            bravo_event["tenant_id"] = "tenant-bravo"
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-bravo",
+                    "--keyring-json",
+                    keyring_json,
+                    "ingest-event",
+                    "--event-json",
+                    json.dumps(bravo_event, sort_keys=True),
+                ],
+                stdout=io.StringIO(),
+            )
+            out_denied = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "merge-propose",
+                    "--memory-ids-json",
+                    '["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","dddddddd-dddd-4ddd-8ddd-dddddddddddd"]',
+                    "--actor-json",
+                    '{"id":"reviewer","kind":"user"}',
+                    "--payload-json",
+                    '{"topic":"merged-cross-tenant"}',
+                    "--merged-memory-id",
+                    "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+                ],
+                stdout=out_denied,
+            )
+            denied_payload = json.loads(out_denied.getvalue())
+            self.assertEqual(denied_payload["outcome"], "denied")
+
     def test_cli_semantic_query_over_imported_payloads(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
             state_file = str(pathlib.Path(tmpdir) / "state.json")

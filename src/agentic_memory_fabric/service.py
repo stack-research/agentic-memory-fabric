@@ -175,6 +175,15 @@ class ServiceApp:
             )
             return respond(HTTPStatus.OK, assessment)
 
+        if method == "POST" and route == "/assess-conflict":
+            assessment = self.runtime.assess_conflict(
+                payload["memory_id"],
+                payload["related_memory_id"],
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+            )
+            return respond(HTTPStatus.OK, assessment)
+
         if method == "POST" and route.startswith("/memory/") and route.endswith("/recall"):
             parts = route.split("/")
             if len(parts) != 4:
@@ -267,6 +276,48 @@ class ServiceApp:
                 event_id=payload.get("event_id"),
                 timestamp=payload.get("timestamp"),
                 evidence_refs=payload.get("evidence_refs"),
+            )
+            return respond(HTTPStatus.OK, result)
+
+        if method == "POST" and route == "/merge/propose":
+            result = self.runtime.propose_merge(
+                payload.get("memory_ids", []),
+                actor=payload["actor"],
+                payload=payload["payload"],
+                resolver_kind=payload.get("resolver_kind", "human_gate"),
+                resolution_reason=payload.get("resolution_reason"),
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+                merged_memory_id=payload.get("merged_memory_id"),
+                event_id=payload.get("event_id"),
+                timestamp=payload.get("timestamp"),
+                evidence_refs=payload.get("evidence_refs"),
+            )
+            return respond(HTTPStatus.OK, result)
+
+        if method == "POST" and route == "/merge/approve":
+            result = self.runtime.approve_merge(
+                payload["memory_id"],
+                actor=payload["actor"],
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+                event_id=payload.get("event_id"),
+                timestamp=payload.get("timestamp"),
+                evidence_refs=payload.get("evidence_refs"),
+                resolution_reason=payload.get("resolution_reason"),
+            )
+            return respond(HTTPStatus.OK, result)
+
+        if method == "POST" and route == "/merge/reject":
+            result = self.runtime.reject_merge(
+                payload["memory_id"],
+                actor=payload["actor"],
+                policy_context=policy_context,
+                trusted_context=trusted_context,
+                event_id=payload.get("event_id"),
+                timestamp=payload.get("timestamp"),
+                evidence_refs=payload.get("evidence_refs"),
+                resolution_reason=payload.get("resolution_reason"),
             )
             return respond(HTTPStatus.OK, result)
 

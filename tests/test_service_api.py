@@ -320,6 +320,231 @@ class ServiceApiTests(unittest.TestCase):
         self.assertEqual(payload_query["records"][1]["memory_id"], "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb")
         self.assertEqual(payload_query["records"][1]["retrieval_mode"], "graph_expand_v1")
 
+    def test_conflict_assessment_and_merge_endpoints(self) -> None:
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        app = ServiceApp(runtime=runtime)
+        app.handle_request(
+            "POST",
+            "/ingest/event",
+            json.dumps(
+                {
+                    "event": self._signed_event(
+                        payload={"topic": "alpha"},
+                        memory_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    )
+                }
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        app.handle_request(
+            "POST",
+            "/ingest/event",
+            json.dumps(
+                {
+                    "event": self._signed_event(
+                        sequence=2,
+                        event_id="22222222-2222-4222-8222-222222222222",
+                        payload={"topic": "bravo"},
+                        memory_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    )
+                }
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        app.handle_request(
+            "POST",
+            "/conflict",
+            json.dumps(
+                {
+                    "source_memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "target_memory_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    "actor": {"id": "svc-memory", "kind": "service"},
+                    "event_id": "33333333-3333-4333-8333-333333333333",
+                    "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 3}
+                }
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        status_assess, payload_assess = app.handle_request(
+            "POST",
+            "/assess-conflict",
+            json.dumps(
+                {
+                    "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "related_memory_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+                }
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_assess, 200)
+        self.assertTrue(payload_assess["resolvable"])
+        status_propose, payload_propose = app.handle_request(
+            "POST",
+            "/merge/propose",
+            json.dumps(
+                {
+                    "memory_ids": [
+                        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+                    ],
+                    "actor": {"id": "reviewer", "kind": "user"},
+                    "payload": {"topic": "merged"},
+                    "resolver_kind": "human_gate",
+                    "merged_memory_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                    "event_id": "44444444-4444-4444-8444-444444444444",
+                    "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 4}
+                }
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_propose, 200)
+        self.assertEqual(payload_propose["outcome"], "appended")
+        self.assertEqual(payload_propose["event"]["event_type"], "merge_proposed")
+        status_approve, payload_approve = app.handle_request(
+            "POST",
+            "/merge/approve",
+            json.dumps(
+                {
+                    "memory_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                    "actor": {"id": "reviewer", "kind": "user"},
+                    "event_id": "55555555-5555-4555-8555-555555555555",
+                    "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 5},
+                    "resolution_reason": "approved"
+                }
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_approve, 200)
+        self.assertEqual(payload_approve["event"]["event_type"], "merge_approved")
+        status_query, payload_query = app.handle_request(
+            "POST",
+            "/query",
+            json.dumps(
+                {"structured_filter": {"merged_into_memory_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc"}}
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_query, 200)
+        self.assertEqual(payload_query["count"], 2)
+
+    def test_merge_reject_and_cross_tenant_denial_endpoints(self) -> None:
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        app = ServiceApp(runtime=runtime)
+        app.handle_request(
+            "POST",
+            "/ingest/event",
+            json.dumps({"event": self._signed_event(payload={"topic": "alpha"})}).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        app.handle_request(
+            "POST",
+            "/ingest/event",
+            json.dumps(
+                {
+                    "event": self._signed_event(
+                        sequence=2,
+                        event_id="22222222-2222-4222-8222-222222222222",
+                        payload={"topic": "bravo"},
+                        memory_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    )
+                }
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        app.handle_request(
+            "POST",
+            "/conflict",
+            json.dumps(
+                {
+                    "source_memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                    "target_memory_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                    "actor": {"id": "svc-memory", "kind": "service"},
+                    "event_id": "33333333-3333-4333-8333-333333333333",
+                    "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 3}
+                }
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        app.handle_request(
+            "POST",
+            "/merge/propose",
+            json.dumps(
+                {
+                    "memory_ids": [
+                        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+                    ],
+                    "actor": {"id": "reviewer", "kind": "user"},
+                    "payload": {"topic": "merged"},
+                    "merged_memory_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                    "event_id": "44444444-4444-4444-8444-444444444444",
+                    "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 4}
+                }
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        status_reject, payload_reject = app.handle_request(
+            "POST",
+            "/merge/reject",
+            json.dumps(
+                {
+                    "memory_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+                    "actor": {"id": "reviewer", "kind": "user"},
+                    "event_id": "55555555-5555-4555-8555-555555555555",
+                    "timestamp": {"wall_time": "2026-03-22T00:00:00Z", "tick": 5},
+                    "resolution_reason": "rejected"
+                }
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_reject, 200)
+        self.assertEqual(payload_reject["event"]["event_type"], "merge_rejected")
+
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        app = ServiceApp(runtime=runtime)
+        app.handle_request(
+            "POST",
+            "/ingest/event",
+            json.dumps({"event": self._signed_event(payload={"topic": "alpha"})}).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        app.handle_request(
+            "POST",
+            "/ingest/event",
+            json.dumps(
+                {
+                    "event": {
+                        **self._signed_event(
+                            sequence=2,
+                            event_id="22222222-2222-4222-8222-222222222222",
+                            payload={"topic": "bravo"},
+                            memory_id="bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+                        ),
+                        "tenant_id": "tenant-bravo",
+                    }
+                }
+            ).encode("utf-8"),
+            headers={"x-tenant-id": "tenant-bravo"},
+        )
+        status_denied, payload_denied = app.handle_request(
+            "POST",
+            "/merge/propose",
+            json.dumps(
+                {
+                    "memory_ids": [
+                        "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+                        "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+                    ],
+                    "actor": {"id": "reviewer", "kind": "user"},
+                    "payload": {"topic": "merged"},
+                    "merged_memory_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+                }
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_denied, 200)
+        self.assertEqual(payload_denied["outcome"], "denied")
+
     def test_semantic_query_over_imported_payloads(self) -> None:
         app = ServiceApp(auth_tokens=AUTH_TOKENS)
         app.handle_request(

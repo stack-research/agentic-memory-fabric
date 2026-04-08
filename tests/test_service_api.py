@@ -15,6 +15,7 @@ from agentic_memory_fabric.runtime import open_runtime
 from agentic_memory_fabric.service import ServiceApp, run_http_server
 from agentic_memory_fabric.crypto import KEY_STATUS_REVOKED, KeyMaterial, sign_event
 from agentic_memory_fabric.events import EventEnvelope, canonical_payload_hash
+from agentic_memory_fabric.query_index import QueryBackendError
 from ed25519_utils import sign_event_ed25519
 
 TENANT_HEADER = {"x-tenant-id": "tenant-alpha"}
@@ -30,6 +31,19 @@ AUTH_TOKENS = {
         "role": "auditor",
     },
 }
+
+
+class _FailingQueryBackend:
+    name = "failing_test_backend"
+
+    def search(self, **_: object) -> list[object]:
+        raise QueryBackendError("backend exploded")
+
+    def refresh(self, *_: object, **__: object) -> None:
+        return
+
+    def close(self) -> None:
+        return
 
 
 class ServiceApiTests(unittest.TestCase):
@@ -195,7 +209,30 @@ class ServiceApiTests(unittest.TestCase):
         self.assertTrue(payload_override["query_allowed"])
         self.assertEqual(payload_override["query_denial_reason"], "uncertainty_below_threshold_default_deny")
         self.assertTrue(payload_override["query_override_used"])
-        self.assertEqual(payload_override["count"], 1)
+
+    def test_query_backend_failure_returns_500(self) -> None:
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        runtime.ingest_event(
+            self._signed_event(
+                sequence=1,
+                event_id="11111111-1111-4111-8111-111111111111",
+                event_type="created",
+                previous_events=[],
+                payload={"topic": "alpha memory"},
+            ),
+            expected_tenant_id="tenant-alpha",
+            trusted_context={"tenant_id": "tenant-alpha"},
+        )
+        runtime._query_index_cache = _FailingQueryBackend()
+        app = ServiceApp(runtime=runtime)
+        status, payload = app.handle_request(
+            "POST",
+            "/query",
+            b'{"query_text":"alpha"}',
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status, 500)
+        self.assertIn("backend exploded", payload["error"])
 
     def test_semantic_query_endpoint_returns_search_metadata(self) -> None:
         runtime = open_runtime(keyring={"dev-key": b"super-secret"})

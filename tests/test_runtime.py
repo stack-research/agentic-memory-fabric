@@ -10,7 +10,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from agentic_memory_fabric.crypto import sign_event
 from agentic_memory_fabric.events import EventEnvelope, canonical_payload_hash
-from agentic_memory_fabric.query_index import InMemoryQueryIndex, QueryIndexEntry
+from agentic_memory_fabric.query_index import InMemoryQueryIndex, QueryBackendError, QueryIndexEntry
 from agentic_memory_fabric.replay import replay_events
 from agentic_memory_fabric.runtime import MemoryRuntime, open_runtime
 
@@ -106,6 +106,32 @@ def _signed_event(
         "sig": sign_event(event, key_id=key_id, key=key),
     }
     return event_dict
+
+
+class _FailingQueryBackend:
+    name = "failing_test_backend"
+
+    def search(self, **_: object) -> list[object]:
+        raise QueryBackendError("backend exploded")
+
+    def refresh(self, *_: object, **__: object) -> None:
+        return
+
+    def close(self) -> None:
+        return
+
+
+class _AssertingQueryBackend:
+    name = "asserting_test_backend"
+
+    def search(self, **_: object) -> list[object]:
+        raise AssertionError("semantic backend should not have been called")
+
+    def refresh(self, *_: object, **__: object) -> None:
+        return
+
+    def close(self) -> None:
+        return
 
 
 class RuntimeReadModelTests(unittest.TestCase):
@@ -434,6 +460,7 @@ class RuntimeReadModelTests(unittest.TestCase):
                     tenant_id="tenant-alpha",
                     memory_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
                     indexed_event_id="33333333-3333-4333-8333-333333333333",
+                    memory_class="episodic",
                     trust_state="trusted",
                     retrieval_text='{"topic":"alpha memory"}',
                     indexed_sequence=1,
@@ -446,6 +473,92 @@ class RuntimeReadModelTests(unittest.TestCase):
             query_text="alpha",
         )
         self.assertEqual(result["count"], 0)
+        self.assertEqual(result["query_backend"], "inmemory")
+        self.assertEqual(result["candidate_count"], 1)
+        self.assertEqual(result["stale_index_filtered"], 1)
+
+    def test_query_gate_denial_returns_before_backend_search(self) -> None:
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        runtime.ingest_event(
+            _signed_event(
+                sequence=1,
+                event_id="11111111-1111-4111-8111-111111111111",
+                event_type="created",
+                previous_events=[],
+                payload={"topic": "alpha memory"},
+            ),
+            expected_tenant_id="tenant-alpha",
+            trusted_context={"tenant_id": "tenant-alpha"},
+        )
+        runtime._query_index_cache = _AssertingQueryBackend()
+        denied = runtime.query(
+            policy_context={
+                "tenant_id": "tenant-alpha",
+                "uncertainty_threshold": 0.8,
+                "uncertainty_score": 0.4,
+            },
+            trusted_context={"tenant_id": "tenant-alpha"},
+            query_text="alpha",
+        )
+        self.assertFalse(denied["query_allowed"])
+        self.assertEqual(denied["query_backend"], "asserting_test_backend")
+        self.assertEqual(denied["candidate_count"], 0)
+
+    def test_inventory_query_ignores_semantic_backend(self) -> None:
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        runtime.ingest_event(
+            _signed_event(
+                sequence=1,
+                event_id="11111111-1111-4111-8111-111111111111",
+                event_type="created",
+                previous_events=[],
+            ),
+            expected_tenant_id="tenant-alpha",
+            trusted_context={"tenant_id": "tenant-alpha"},
+        )
+        runtime._query_index_cache = _AssertingQueryBackend()
+        result = runtime.query(
+            policy_context={"tenant_id": "tenant-alpha"},
+            trusted_context={
+                "tenant_id": "tenant-alpha",
+                "capabilities": ["override_retrieval_denials"],
+            },
+        )
+        self.assertEqual(result["count"], 1)
+        self.assertNotIn("query_backend", result)
+
+    def test_pgvector_backend_requires_driver_and_fails_closed(self) -> None:
+        with self.assertRaises(QueryBackendError):
+            open_runtime(
+                query_backend="pgvector",
+                query_backend_dsn="postgresql://amf:amf@127.0.0.1:5432/amf",
+            )
+
+    def test_semantic_query_audit_includes_backend_metadata(self) -> None:
+        audit_events: list[dict] = []
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"}, audit_sink=audit_events.append)
+        runtime.ingest_event(
+            _signed_event(
+                sequence=1,
+                event_id="11111111-1111-4111-8111-111111111111",
+                event_type="created",
+                previous_events=[],
+                payload={"topic": "alpha memory"},
+            ),
+            expected_tenant_id="tenant-alpha",
+            trusted_context={"tenant_id": "tenant-alpha"},
+        )
+        runtime.query(
+            policy_context={"tenant_id": "tenant-alpha"},
+            trusted_context={"tenant_id": "tenant-alpha"},
+            query_text="alpha",
+        )
+        query_events = [event for event in audit_events if event.get("type") == "memory.query"]
+        self.assertEqual(len(query_events), 1)
+        self.assertEqual(query_events[0]["query_backend"], "inmemory")
+        self.assertEqual(query_events[0]["candidate_count"], 1)
+        self.assertEqual(query_events[0]["stale_index_filtered"], 0)
+        self.assertIsNotNone(query_events[0]["backend_latency_ms"])
 
     def test_assess_promotion_returns_score_and_default_eligibility_for_signed_episodic_memory(self) -> None:
         runtime = open_runtime(keyring={"dev-key": b"super-secret"})

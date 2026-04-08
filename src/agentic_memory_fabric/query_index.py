@@ -1,15 +1,19 @@
-"""Deterministic in-memory query index for semantic-ready retrieval."""
+"""Semantic query backends and deterministic local embedding helpers."""
 
 from __future__ import annotations
 
+import hashlib
+import math
 import re
 from dataclasses import dataclass
-from typing import Mapping, Protocol
+from typing import TYPE_CHECKING, Mapping, Protocol
 
-from .replay import MemoryState
+if TYPE_CHECKING:
+    from .replay import MemoryState
 
 
 _TOKEN_RE = re.compile(r"[A-Za-z0-9_]+")
+DEFAULT_EMBEDDING_DIMENSION = 16
 
 
 def tokenize_text(value: str) -> tuple[str, ...]:
@@ -21,6 +25,7 @@ class QueryIndexEntry:
     tenant_id: str
     memory_id: str
     indexed_event_id: str
+    memory_class: str
     trust_state: str
     retrieval_text: str
     indexed_sequence: int
@@ -35,17 +40,63 @@ class SearchHit:
     retrieval_mode: str
 
 
-class QueryIndex(Protocol):
+class QueryBackendError(RuntimeError):
+    """Raised when the semantic query backend is unavailable or unhealthy."""
+
+
+class TextEmbedder(Protocol):
+    dimension: int
+
+    def embed_text(self, text: str) -> list[float]: ...
+
+
+class QueryBackend(Protocol):
+    name: str
+
     def search(
         self,
         *,
         query_text: str,
         tenant_id: str | None,
+        memory_class: str | None = None,
         limit: int | None = None,
     ) -> list[SearchHit]: ...
 
+    def refresh(
+        self,
+        state_map: Mapping[str, MemoryState],
+        *,
+        memory_ids: tuple[str, ...] | None = None,
+    ) -> None: ...
+
+    def close(self) -> None: ...
+
+
+class DeterministicTextEmbedder:
+    """Stable local embedder for tests and offline development."""
+
+    dimension = DEFAULT_EMBEDDING_DIMENSION
+
+    def embed_text(self, text: str) -> list[float]:
+        vector = [0.0] * self.dimension
+        tokens = tokenize_text(text)
+        if not tokens:
+            return vector
+        for token in tokens:
+            digest = hashlib.sha256(token.encode("utf-8")).digest()
+            for offset in range(4):
+                bucket = digest[offset] % self.dimension
+                sign = 1.0 if digest[offset + 4] % 2 == 0 else -1.0
+                vector[bucket] += sign
+        norm = math.sqrt(sum(value * value for value in vector))
+        if norm == 0.0:
+            return vector
+        return [round(value / norm, 6) for value in vector]
+
 
 class InMemoryQueryIndex:
+    name = "inmemory"
+
     def __init__(self, entries: tuple[QueryIndexEntry, ...]) -> None:
         self._entries = entries
 
@@ -60,6 +111,7 @@ class InMemoryQueryIndex:
                     tenant_id=state.tenant_id,
                     memory_id=state.memory_id,
                     indexed_event_id=state.last_event_id,
+                    memory_class=state.memory_class,
                     trust_state=state.trust_state,
                     retrieval_text=state.retrieval_text,
                     indexed_sequence=state.last_sequence,
@@ -72,6 +124,7 @@ class InMemoryQueryIndex:
         *,
         query_text: str,
         tenant_id: str | None,
+        memory_class: str | None = None,
         limit: int | None = None,
     ) -> list[SearchHit]:
         if limit is not None and limit < 1:
@@ -84,6 +137,8 @@ class InMemoryQueryIndex:
         hits: list[SearchHit] = []
         for entry in self._entries:
             if tenant_id is not None and entry.tenant_id != tenant_id:
+                continue
+            if memory_class is not None and entry.memory_class != memory_class:
                 continue
             entry_tokens = tokenize_text(entry.retrieval_text)
             if not entry_tokens:
@@ -113,3 +168,20 @@ class InMemoryQueryIndex:
         if limit is not None:
             return hits[:limit]
         return hits
+
+    def refresh(
+        self,
+        state_map: Mapping[str, MemoryState],
+        *,
+        memory_ids: tuple[str, ...] | None = None,
+    ) -> None:
+        del memory_ids
+        rebuilt = self.build(state_map)
+        self._entries = rebuilt._entries
+
+    def close(self) -> None:
+        return
+
+
+InMemoryQueryBackend = InMemoryQueryIndex
+QueryIndex = QueryBackend

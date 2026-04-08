@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timezone
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,8 +26,15 @@ from .policy import (
     PolicyContext,
     evaluate_query_gate,
 )
+from .pgvector_backend import PgVectorQueryBackend
 from .promotion import PromotionAssessment, compute_promotion_score
-from .query_index import InMemoryQueryIndex, QueryIndex
+from .query_index import (
+    DeterministicTextEmbedder,
+    InMemoryQueryIndex,
+    QueryBackend,
+    QueryBackendError,
+    TextEmbedder,
+)
 from .replay import MemoryState, replay_events
 from .resolution import (
     DEFAULT_RESOLVER_KIND,
@@ -53,9 +61,31 @@ class MemoryRuntime:
     log: EventLog = field(default_factory=AppendOnlyEventLog)
     keyring: dict[str, bytes | str | Mapping[str, Any] | KeyMaterial] = field(default_factory=dict)
     audit_sink: AuditSink | None = None
+    query_backend_name: str = "inmemory"
+    query_backend_dsn: str | None = None
+    query_backend_schema: str = "amf_query"
+    bootstrap_query_backend: bool = False
+    embedder: TextEmbedder | None = None
     _state_cache: dict[str, MemoryState] | None = field(default=None, init=False, repr=False)
     _events_cache: tuple[EventEnvelope, ...] | None = field(default=None, init=False, repr=False)
-    _query_index_cache: QueryIndex | None = field(default=None, init=False, repr=False)
+    _query_index_cache: QueryBackend | None = field(default=None, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        if self.query_backend_name not in {"inmemory", "pgvector"}:
+            raise ValueError("query_backend must be 'inmemory' or 'pgvector'")
+        if self.embedder is None:
+            self.embedder = DeterministicTextEmbedder()
+        if self.query_backend_name == "pgvector":
+            if self.query_backend_dsn is None:
+                raise ValueError("query_backend_dsn is required when query_backend='pgvector'")
+            self._query_index_cache = PgVectorQueryBackend(
+                dsn=self.query_backend_dsn,
+                schema=self.query_backend_schema,
+                embedder=self.embedder,
+                bootstrap=self.bootstrap_query_backend,
+            )
+            if len(self.log) > 0:
+                self._refresh_query_backend()
 
     def _key_resolver(
         self, key_id: str
@@ -154,7 +184,8 @@ class MemoryRuntime:
     def _invalidate_read_model_cache(self) -> None:
         self._state_cache = None
         self._events_cache = None
-        self._query_index_cache = None
+        if self.query_backend_name == "inmemory":
+            self._query_index_cache = None
 
     def _next_sequence(self) -> int:
         return len(self.log) + 1
@@ -564,10 +595,43 @@ class MemoryRuntime:
             return
         self.audit_sink(dict(event))
 
-    def _query_index(self) -> QueryIndex:
+    def _query_index(self) -> QueryBackend:
         if self._query_index_cache is None:
             self._query_index_cache = InMemoryQueryIndex.build(self.state_map())
         return self._query_index_cache
+
+    def _query_backend_memory_class(
+        self,
+        structured_filter: Mapping[str, Any] | None,
+    ) -> str | None:
+        if structured_filter is None:
+            return None
+        memory_class = structured_filter.get("memory_class")
+        if memory_class is None:
+            return None
+        return str(memory_class)
+
+    def _refresh_query_backend(
+        self,
+        *,
+        memory_ids: tuple[str, ...] | None = None,
+    ) -> None:
+        if self.query_backend_name != "pgvector":
+            return
+        backend = self._query_index()
+        try:
+            backend.refresh(self.state_map(), memory_ids=memory_ids)
+        except QueryBackendError:
+            raise
+        except Exception as exc:  # pragma: no cover - defensive boundary
+            raise QueryBackendError(f"semantic query backend refresh failed: {exc}") from exc
+
+    def sync_query_backend(
+        self,
+        *,
+        memory_ids: tuple[str, ...] | None = None,
+    ) -> None:
+        self._refresh_query_backend(memory_ids=memory_ids)
 
     def _reference_tick(self, state_map: Mapping[str, MemoryState]) -> int:
         if not state_map:
@@ -679,6 +743,7 @@ class MemoryRuntime:
         self._validate_dynamic_event(event)
         self.log.append(event, signature_verifier=self._signature_verifier)
         self._invalidate_read_model_cache()
+        self._refresh_query_backend(memory_ids=(event.memory_id,))
         return event
 
     def import_records(
@@ -714,6 +779,7 @@ class MemoryRuntime:
             signature_verifier=self._signature_verifier,
         )
         self._invalidate_read_model_cache()
+        self._refresh_query_backend(memory_ids=tuple(dict.fromkeys(event.memory_id for event in events)))
         return events
 
     def query(
@@ -729,6 +795,8 @@ class MemoryRuntime:
         graph_edge_kinds: list[str] | tuple[str, ...] | set[str] | None = None,
     ) -> dict[str, Any]:
         ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
+        semantic_query = bool(query_text and str(query_text).strip())
+        backend_name = self._query_index().name if semantic_query else None
         gate = evaluate_query_gate(ctx)
         if not gate.allowed:
             denied = {
@@ -738,6 +806,14 @@ class MemoryRuntime:
                 "query_denial_reason": gate.denial_reason,
                 "query_override_used": gate.override_used,
             }
+            if semantic_query:
+                denied.update(
+                    {
+                        "query_backend": backend_name,
+                        "candidate_count": 0,
+                        "stale_index_filtered": 0,
+                    }
+                )
             self._emit_audit(
                 {
                     "type": "memory.query",
@@ -754,6 +830,11 @@ class MemoryRuntime:
                     "query_override_used": gate.override_used,
                     "uncertainty_score": ctx.uncertainty_score,
                     "uncertainty_threshold": ctx.uncertainty_threshold,
+                    "query_text_present": semantic_query,
+                    "query_backend": backend_name,
+                    "candidate_count": 0,
+                    "stale_index_filtered": 0,
+                    "backend_latency_ms": None,
                 }
             )
             return denied
@@ -761,6 +842,9 @@ class MemoryRuntime:
         if structured_filter is not None and not isinstance(structured_filter, Mapping):
             raise ValueError("structured_filter must be an object when provided")
         requested_graph_edge_kinds = self._normalize_graph_edge_kinds(graph_edge_kinds)
+        backend_latency_ms: float | None = None
+        candidate_count: int | None = None
+        stale_index_filtered: int | None = None
         if query_text is None or not str(query_text).strip():
             if structured_filter is None:
                 records, summary = query_with_summary(
@@ -811,18 +895,30 @@ class MemoryRuntime:
             override_used_count = 0
             denied_by_reason: dict[str, int] = {}
             records_out: list[dict[str, Any]] = []
-            hits = self._query_index().search(
-                query_text=str(query_text),
-                tenant_id=ctx.tenant_id,
-                limit=None,
-            )
+            stale_index_filtered = 0
+            search_started = time.perf_counter()
+            try:
+                hits = self._query_index().search(
+                    query_text=str(query_text),
+                    tenant_id=ctx.tenant_id,
+                    memory_class=self._query_backend_memory_class(structured_filter),
+                    limit=None,
+                )
+            except QueryBackendError:
+                raise
+            except Exception as exc:  # pragma: no cover - defensive boundary
+                raise QueryBackendError(f"semantic query backend search failed: {exc}") from exc
+            backend_latency_ms = round((time.perf_counter() - search_started) * 1000.0, 3)
+            candidate_count = len(hits)
             candidates: dict[str, QueryCandidate] = {}
             direct_memory_ids: list[str] = []
             for hit in hits:
                 state = state_map.get(hit.memory_id)
                 if state is None:
+                    stale_index_filtered += 1
                     continue
                 if state.last_event_id != hit.indexed_event_id:
+                    stale_index_filtered += 1
                     continue
                 score = direct_retrieval_score(
                     lexical_score=hit.retrieval_score,
@@ -919,6 +1015,16 @@ class MemoryRuntime:
             "query_denial_reason": gate.denial_reason,
             "query_override_used": gate.override_used,
         }
+        if semantic_query:
+            response.update(
+                {
+                    "query_backend": backend_name,
+                    "candidate_count": candidate_count if candidate_count is not None else 0,
+                    "stale_index_filtered": (
+                        stale_index_filtered if stale_index_filtered is not None else 0
+                    ),
+                }
+            )
         self._emit_audit(
             {
                 "type": "memory.query",
@@ -930,7 +1036,7 @@ class MemoryRuntime:
                 "trust_state_filtered": summary.trust_state_filtered,
                 "override_used_count": summary.override_used_count,
                 "denied_by_reason": dict(summary.denied_by_reason),
-                "query_text_present": bool(query_text and str(query_text).strip()),
+                "query_text_present": semantic_query,
                 "graph_expand": graph_expand,
                 "graph_edge_kinds": list(requested_graph_edge_kinds) if graph_expand else [],
                 "query_allowed": True,
@@ -938,6 +1044,10 @@ class MemoryRuntime:
                 "query_override_used": gate.override_used,
                 "uncertainty_score": ctx.uncertainty_score,
                 "uncertainty_threshold": ctx.uncertainty_threshold,
+                "query_backend": backend_name,
+                "candidate_count": candidate_count if semantic_query else None,
+                "stale_index_filtered": stale_index_filtered if semantic_query else None,
+                "backend_latency_ms": backend_latency_ms if semantic_query else None,
             }
         )
         return response
@@ -1938,6 +2048,10 @@ class MemoryRuntime:
         return provenance
 
     def close(self) -> None:
+        if self._query_index_cache is not None:
+            close_backend = getattr(self._query_index_cache, "close", None)
+            if callable(close_backend):
+                close_backend()
         close_fn = getattr(self.log, "close", None)
         if callable(close_fn):
             close_fn()
@@ -1948,10 +2062,27 @@ def open_runtime(
     db_path: str | Path | None = None,
     keyring: Mapping[str, bytes | str | Mapping[str, Any] | KeyMaterial] | None = None,
     audit_sink: AuditSink | None = None,
+    query_backend: str = "inmemory",
+    query_backend_dsn: str | None = None,
+    query_backend_schema: str = "amf_query",
+    bootstrap_query_backend: bool = False,
+    embedder: TextEmbedder | None = None,
 ) -> MemoryRuntime:
     log: EventLog
     if db_path is None:
         log = AppendOnlyEventLog()
     else:
         log = SQLiteEventLog(db_path=db_path)
-    return MemoryRuntime(log=log, keyring=dict(keyring or {}), audit_sink=audit_sink)
+    runtime = MemoryRuntime(
+        log=log,
+        keyring=dict(keyring or {}),
+        audit_sink=audit_sink,
+        query_backend_name=query_backend,
+        query_backend_dsn=query_backend_dsn,
+        query_backend_schema=query_backend_schema,
+        bootstrap_query_backend=bootstrap_query_backend,
+        embedder=embedder,
+    )
+    if query_backend == "pgvector":
+        runtime.sync_query_backend()
+    return runtime

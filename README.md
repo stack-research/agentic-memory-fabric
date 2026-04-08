@@ -214,15 +214,46 @@ For end-to-end, human-readable examples (with sectioned output and pretty-printe
 - `examples/real-world-cli-poisoning-attempt.sh`
 - `examples/real-world-cli-decay-half-life.sh`
 
-## Local Dev Vector Backend
+## Local Dev and RDS Vector Backend
 
-The shipped runtime still uses the deterministic in-memory query index by default. For the next phase, the repo now includes [`docker-compose.pgvector.yml`](/Users/macos-user/.projects/stack-research/agentic-memory-fabric/docker-compose.pgvector.yml) as local-dev scaffolding for a Postgres + `pgvector` backend:
+The shipped runtime still uses the deterministic in-memory query index by default. Semantic query can now be pointed at a Postgres + `pgvector` backend, with AWS RDS for PostgreSQL as the intended managed target and other Postgres providers left open through the same DSN-driven adapter.
+
+For local development, the repo includes [`docker-compose.pgvector.yml`](/Users/macos-user/.projects/stack-research/agentic-memory-fabric/docker-compose.pgvector.yml):
 
 ```bash
 docker compose -f docker-compose.pgvector.yml up -d
 ```
 
 That container is optional. Default tests and library flows do not require it.
+
+Example runtime startup against Postgres or RDS:
+
+```python
+from agentic_memory_fabric.runtime import open_runtime
+
+runtime = open_runtime(
+    db_path="events.db",
+    query_backend="pgvector",
+    query_backend_dsn="postgresql://amf:amf@127.0.0.1:5432/amf",
+    query_backend_schema="amf_query",
+    bootstrap_query_backend=True,
+)
+```
+
+Example CLI startup:
+
+```bash
+python3 -m agentic_memory_fabric.cli \
+  --db events.db \
+  --tenant-id tenant-alpha \
+  --query-backend pgvector \
+  --query-backend-dsn 'postgresql://amf:amf@127.0.0.1:5432/amf' \
+  --bootstrap-query-backend \
+  query \
+  --query-text "memory fabric"
+```
+
+If `--query-backend pgvector` or `query_backend="pgvector"` is set and the backend is unavailable, AMF fails closed. It does not silently fall back to the in-memory semantic index.
 
 ## Audit Hooks
 

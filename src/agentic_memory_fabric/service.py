@@ -10,6 +10,7 @@ from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
 from .crypto import KeyMaterial
+from .query_index import QueryBackendError, TextEmbedder
 from .runtime import MemoryRuntime, open_runtime
 
 
@@ -139,16 +140,19 @@ class ServiceApp:
             )
 
         if method == "POST" and route == "/query":
-            query_result = self.runtime.query(
-                policy_context=policy_context,
-                trusted_context=trusted_context,
-                query_text=payload.get("query_text"),
-                structured_filter=payload.get("structured_filter"),
-                trust_states=set(payload["trust_states"]) if payload.get("trust_states") else None,
-                limit=payload.get("limit"),
-                graph_expand=bool(payload.get("graph_expand", False)),
-                graph_edge_kinds=payload.get("graph_edge_kinds"),
-            )
+            try:
+                query_result = self.runtime.query(
+                    policy_context=policy_context,
+                    trusted_context=trusted_context,
+                    query_text=payload.get("query_text"),
+                    structured_filter=payload.get("structured_filter"),
+                    trust_states=set(payload["trust_states"]) if payload.get("trust_states") else None,
+                    limit=payload.get("limit"),
+                    graph_expand=bool(payload.get("graph_expand", False)),
+                    graph_edge_kinds=payload.get("graph_edge_kinds"),
+                )
+            except QueryBackendError as exc:
+                return respond(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)})
             return respond(HTTPStatus.OK, query_result)
 
         if method == "POST" and route.startswith("/memory/") and route.endswith("/peek"):
@@ -368,6 +372,8 @@ def create_http_handler(app: ServiceApp):
                     body,
                     headers=headers,
                 )
+            except QueryBackendError as exc:  # pragma: no cover - defensive boundary
+                status, payload = HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)}
             except Exception as exc:  # pragma: no cover - defensive boundary
                 status, payload = HTTPStatus.BAD_REQUEST, {"error": str(exc)}
             encoded = json.dumps(payload, sort_keys=True).encode("utf-8")
@@ -397,10 +403,24 @@ def run_http_server(
     db_path: str | None = None,
     keyring: Mapping[str, bytes | str | Mapping[str, Any] | KeyMaterial] | None = None,
     audit_sink: Callable[[Mapping[str, Any]], None] | None = None,
+    query_backend: str = "inmemory",
+    query_backend_dsn: str | None = None,
+    query_backend_schema: str = "amf_query",
+    bootstrap_query_backend: bool = False,
+    embedder: TextEmbedder | None = None,
 ) -> ThreadingHTTPServer:
     if runtime is not None and db_path is not None:
         raise ValueError("provide either runtime or db_path, not both")
-    app_runtime = runtime or open_runtime(db_path=db_path, keyring=keyring, audit_sink=audit_sink)
+    app_runtime = runtime or open_runtime(
+        db_path=db_path,
+        keyring=keyring,
+        audit_sink=audit_sink,
+        query_backend=query_backend,
+        query_backend_dsn=query_backend_dsn,
+        query_backend_schema=query_backend_schema,
+        bootstrap_query_backend=bootstrap_query_backend,
+        embedder=embedder,
+    )
     app = ServiceApp(runtime=app_runtime, audit_sink=audit_sink)
     server = ThreadingHTTPServer((host, port), create_http_handler(app))
     return server

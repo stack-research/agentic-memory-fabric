@@ -49,7 +49,19 @@ from .policy import (
     evaluate_retrieval_policy,
 )
 from .promotion import PromotionAssessment, compute_promotion_eligible, compute_promotion_score
-from .query_index import InMemoryQueryIndex, QueryIndex, QueryIndexEntry, SearchHit
+from .pgvector_backend import PgVectorBackendConfig, PgVectorQueryBackend
+from .query_index import (
+    DEFAULT_EMBEDDING_DIMENSION,
+    DeterministicTextEmbedder,
+    InMemoryQueryBackend,
+    InMemoryQueryIndex,
+    QueryBackend,
+    QueryBackendError,
+    QueryIndex,
+    QueryIndexEntry,
+    SearchHit,
+    TextEmbedder,
+)
 from .replay import MemoryState, replay_events
 from .resolution import ConflictAssessment, DEFAULT_RESOLVER_KIND, stable_conflict_set_id
 from .retrieval import (
@@ -89,6 +101,8 @@ __all__ = [
     "DEFAULT_RESOLVER_KIND",
     "ConflictAssessment",
     "DEFAULT_EDGE_WEIGHT",
+    "DEFAULT_EMBEDDING_DIMENSION",
+    "DeterministicTextEmbedder",
     "GetOutcome",
     "DecayPolicy",
     "EventLog",
@@ -106,6 +120,10 @@ __all__ = [
     "PolicyContext",
     "PolicyDecision",
     "PromotionAssessment",
+    "PgVectorBackendConfig",
+    "PgVectorQueryBackend",
+    "QueryBackend",
+    "QueryBackendError",
     "QueryIndex",
     "QueryIndexEntry",
     "QueryGateDecision",
@@ -131,8 +149,10 @@ __all__ = [
     "MemoryRuntime",
     "SQLiteEventLog",
     "ServiceApp",
+    "TextEmbedder",
     "append_imported_records",
     "import_records",
+    "InMemoryQueryBackend",
     "query",
     "query_with_summary",
     "replay_events",

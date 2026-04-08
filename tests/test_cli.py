@@ -15,6 +15,7 @@ if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
 from agentic_memory_fabric.cli import run_cli
 from agentic_memory_fabric.crypto import sign_event
 from agentic_memory_fabric.events import EventEnvelope, canonical_payload_hash
+from agentic_memory_fabric.query_index import QueryBackendError
 from ed25519_utils import sign_event_ed25519
 
 
@@ -221,6 +222,23 @@ class CliTests(unittest.TestCase):
             )
             provenance = json.loads(out_prov.getvalue())
             self.assertEqual(provenance["count"], 1)
+
+    def test_cli_pgvector_backend_fails_closed_without_driver(self) -> None:
+        with self.assertRaises(QueryBackendError):
+            run_cli(
+                [
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--query-backend",
+                    "pgvector",
+                    "--query-backend-dsn",
+                    "postgresql://amf:amf@127.0.0.1:5432/amf",
+                    "query",
+                    "--query-text",
+                    "alpha",
+                ],
+                stdout=io.StringIO(),
+            )
 
     def test_cli_signed_ingest_with_keyring_allows_default_query(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

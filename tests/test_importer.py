@@ -74,6 +74,18 @@ class ImporterTests(unittest.TestCase):
         second = replay_events(events)
         self.assertEqual(first, second)
 
+    def test_import_preserves_inline_payload_for_semantic_query_materialization(self) -> None:
+        events = import_records(
+            self._records(),
+            actor={"id": "migration-bot", "kind": "service"},
+            start_sequence=1,
+            default_timestamp="2026-03-22T00:00:00Z",
+        )
+        state = replay_events(events)["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"]
+        self.assertEqual(state.payload, {"name": "alpha-v2"})
+        self.assertEqual(state.retrieval_text, '{"name":"alpha-v2"}')
+        self.assertTrue(state.queryable_payload_present)
+
     def test_provenance_and_snapshot_reflect_imported_data(self) -> None:
         events = import_records(
             self._records(),

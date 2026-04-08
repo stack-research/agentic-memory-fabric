@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .events import EventEnvelope
+from .events import EventEnvelope, payload_to_retrieval_text
 
 
 TRUSTED_EVENT_TYPES = {
@@ -33,7 +33,10 @@ class MemoryState:
     signature_state: str
     last_tick: int
     payload_hash: str
-    previous_events: tuple[str, ...]
+    payload: object | None = None
+    retrieval_text: str | None = None
+    queryable_payload_present: bool = False
+    previous_events: tuple[str, ...] = ()
     lineage_depth: int = 0
     recall_count: int = 0
     reconsolidation_count: int = 0
@@ -63,12 +66,20 @@ def replay_events(
         last_access_tick = None if existing is None else existing.last_access_tick
         last_recall_tick = None if existing is None else existing.last_recall_tick
         last_write_tick = None if existing is None else existing.last_write_tick
+        payload = None if existing is None else existing.payload
+        retrieval_text = None if existing is None else existing.retrieval_text
+        queryable_payload_present = (
+            False if existing is None else existing.queryable_payload_present
+        )
         current_tick = event.timestamp.tick if event.timestamp.tick is not None else event.sequence
 
         if event.event_type in CONTENT_VERSION_EVENT_TYPES:
             version += 1
             last_write_tick = current_tick
             last_access_tick = current_tick
+            payload = event.payload
+            retrieval_text = payload_to_retrieval_text(event.payload)
+            queryable_payload_present = event.payload is not None and retrieval_text is not None
 
         if event.event_type == "quarantined":
             trust_state = "quarantined"
@@ -119,6 +130,9 @@ def replay_events(
             # Prefer explicit logical tick and fall back to sequence for deterministic clocking.
             last_tick=current_tick,
             payload_hash=event.payload_hash,
+            payload=payload,
+            retrieval_text=retrieval_text,
+            queryable_payload_present=queryable_payload_present,
             previous_events=event.previous_events,
             lineage_depth=lineage_depth,
             recall_count=recall_count,

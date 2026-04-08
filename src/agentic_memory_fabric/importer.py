@@ -2,22 +2,11 @@
 
 from __future__ import annotations
 
-import hashlib
-import json
 from typing import Any, Iterable, Mapping
 from uuid import NAMESPACE_URL, uuid5
 
-from .events import Actor, EventEnvelope
+from .events import Actor, EventEnvelope, canonical_payload_hash
 from .log import EventLog, SignatureVerifier
-
-
-def _canonical_json(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
-
-
-def _sha256_hash(value: Any) -> str:
-    digest = hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
-    return f"sha256:{digest}"
 
 
 def _deterministic_event_id(*, memory_id: str, sequence: int, payload_hash: str, source_ref: str) -> str:
@@ -57,7 +46,7 @@ def import_records(
         payload = record.get("payload", {})
         payload_hash = record.get("payload_hash")
         if payload_hash is None:
-            payload_hash = _sha256_hash(payload)
+            payload_hash = canonical_payload_hash(payload)
 
         explicit_previous = record.get("previous_events")
         if explicit_previous is None:
@@ -99,6 +88,8 @@ def import_records(
             "payload_hash": payload_hash,
             "evidence_refs": evidence_refs,
         }
+        if "payload" in record:
+            event_data["payload"] = payload
         if "trust_transition" in record:
             event_data["trust_transition"] = record["trust_transition"]
         if "signature" in record:

@@ -13,10 +13,13 @@ from .crypto import (
 from .events import (
     Actor,
     Attestation,
+    canonical_json_dumps,
+    canonical_payload_hash,
     EventEnvelope,
     EventSignature,
     EventTimestamp,
     EvidenceRef,
+    payload_to_retrieval_text,
     TrustTransition,
     validate_event_envelope,
 )
@@ -25,7 +28,15 @@ from .explain import explain
 from .export import export_provenance_log, export_sbom_snapshot
 from .importer import append_imported_records, import_records
 from .log import AppendOnlyEventLog, EventLog
-from .policy import ATTESTATION_TRUST_LEVELS, PolicyContext, PolicyDecision, evaluate_retrieval_policy
+from .policy import (
+    ATTESTATION_TRUST_LEVELS,
+    PolicyContext,
+    PolicyDecision,
+    QueryGateDecision,
+    evaluate_query_gate,
+    evaluate_retrieval_policy,
+)
+from .query_index import InMemoryQueryIndex, QueryIndex, QueryIndexEntry, SearchHit
 from .replay import MemoryState, replay_events
 from .retrieval import (
     GetOutcome,
@@ -55,6 +66,8 @@ __all__ = [
     "AuditSink",
     "Attestation",
     "ATTESTATION_TRUST_LEVELS",
+    "canonical_json_dumps",
+    "canonical_payload_hash",
     "GetOutcome",
     "DecayPolicy",
     "EventLog",
@@ -67,16 +80,22 @@ __all__ = [
     "KEY_STATUS_ACTIVE",
     "KEY_STATUS_REVOKED",
     "MemoryState",
+    "InMemoryQueryIndex",
     "PolicyContext",
     "PolicyDecision",
+    "QueryIndex",
+    "QueryIndexEntry",
+    "QueryGateDecision",
     "QueryAuditSummary",
     "RetrievalRecord",
     "SUPPORTED_SIGNATURE_ALGS",
     "SignatureState",
+    "SearchHit",
     "TrustTransition",
     "canonicalize_event_for_signing",
     "compute_age_ticks",
     "evaluate_retrieval_policy",
+    "evaluate_query_gate",
     "evaluate_freshness",
     "explain",
     "export_provenance_log",
@@ -94,6 +113,7 @@ __all__ = [
     "run_cli",
     "run_http_server",
     "open_runtime",
+    "payload_to_retrieval_text",
     "peek",
     "sign_event",
     "validate_event_envelope",

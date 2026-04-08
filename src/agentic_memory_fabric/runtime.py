@@ -15,9 +15,14 @@ from .explain import explain
 from .export import export_provenance_log, export_sbom_snapshot
 from .importer import append_imported_records
 from .log import AppendOnlyEventLog, EventLog
-from .policy import ATTESTATION_TRUST_LEVELS, PolicyContext
+from .policy import (
+    ATTESTATION_TRUST_LEVELS,
+    PolicyContext,
+    evaluate_query_gate,
+)
+from .query_index import InMemoryQueryIndex, QueryIndex
 from .replay import MemoryState, replay_events
-from .retrieval import get_outcome, query_with_summary
+from .retrieval import get_outcome, query_with_summary, to_retrieval_record
 from .sqlite_store import SQLiteEventLog
 
 AuditSink = Callable[[Mapping[str, Any]], None]
@@ -30,6 +35,7 @@ class MemoryRuntime:
     audit_sink: AuditSink | None = None
     _state_cache: dict[str, MemoryState] | None = field(default=None, init=False, repr=False)
     _events_cache: tuple[EventEnvelope, ...] | None = field(default=None, init=False, repr=False)
+    _query_index_cache: QueryIndex | None = field(default=None, init=False, repr=False)
 
     def _key_resolver(
         self, key_id: str
@@ -84,6 +90,15 @@ class MemoryRuntime:
         tenant_id = trusted.get("tenant_id")
         if tenant_id is None:
             tenant_id = source.get("tenant_id")
+        uncertainty_score = source.get("uncertainty_score")
+        if uncertainty_score is not None:
+            uncertainty_score = float(uncertainty_score)
+        uncertainty_threshold = source.get("uncertainty_threshold")
+        if uncertainty_threshold is not None:
+            uncertainty_threshold = float(uncertainty_threshold)
+        uncertainty_reason = source.get("uncertainty_reason")
+        if uncertainty_reason is not None:
+            uncertainty_reason = str(uncertainty_reason)
         return PolicyContext(
             role=str(trusted.get("role", "runtime")),
             capabilities=frozenset(trusted.get("capabilities", [])),
@@ -97,6 +112,12 @@ class MemoryRuntime:
             require_attestation=bool(source.get("require_attestation", False)),
             min_attestation_trust_level=min_attestation_trust_level,
             allowed_attestation_issuers=allowed_attestation_issuers,
+            uncertainty_score=uncertainty_score,
+            uncertainty_threshold=uncertainty_threshold,
+            uncertainty_reason=uncertainty_reason,
+            allow_low_uncertainty_override=bool(
+                source.get("allow_low_uncertainty_override", False)
+            ),
         )
 
     def _expected_tenant_id(self, trusted_context: Mapping[str, Any] | None = None) -> str | None:
@@ -113,6 +134,7 @@ class MemoryRuntime:
     def _invalidate_read_model_cache(self) -> None:
         self._state_cache = None
         self._events_cache = None
+        self._query_index_cache = None
 
     def _next_sequence(self) -> int:
         return len(self.log) + 1
@@ -197,6 +219,7 @@ class MemoryRuntime:
         event_type: str,
         actor: Mapping[str, Any] | Actor,
         payload_hash: str,
+        payload: Any | None = None,
         trusted_context: Mapping[str, Any] | None,
         event_id: str | None = None,
         timestamp: Mapping[str, Any] | None = None,
@@ -220,6 +243,8 @@ class MemoryRuntime:
             "previous_events": [state.last_event_id],
             "payload_hash": payload_hash,
         }
+        if payload is not None:
+            event_data["payload"] = payload
         if evidence_refs is not None:
             event_data["evidence_refs"] = evidence_refs
         if signature is not None:
@@ -250,6 +275,34 @@ class MemoryRuntime:
         if self.audit_sink is None:
             return
         self.audit_sink(dict(event))
+
+    def _query_index(self) -> QueryIndex:
+        if self._query_index_cache is None:
+            self._query_index_cache = InMemoryQueryIndex.build(self.state_map())
+        return self._query_index_cache
+
+    def _matches_structured_filter(
+        self,
+        state: MemoryState,
+        structured_filter: Mapping[str, Any] | None,
+    ) -> bool:
+        if structured_filter is None:
+            return True
+        allowed_fields = {
+            "memory_id",
+            "tenant_id",
+            "trust_state",
+            "lifecycle_state",
+            "signature_state",
+            "version",
+            "queryable_payload_present",
+        }
+        for key, expected in structured_filter.items():
+            if key not in allowed_fields:
+                raise ValueError(f"unsupported structured_filter field: {key}")
+            if getattr(state, key) != expected:
+                return False
+        return True
 
     def state_map(self) -> dict[str, MemoryState]:
         if self._state_cache is None:
@@ -313,17 +366,144 @@ class MemoryRuntime:
         *,
         policy_context: Mapping[str, Any] | None = None,
         trusted_context: Mapping[str, Any] | None = None,
+        query_text: str | None = None,
+        structured_filter: Mapping[str, Any] | None = None,
         trust_states: set[str] | None = None,
         limit: int | None = None,
-    ) -> list[dict[str, Any]]:
+    ) -> dict[str, Any]:
         ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
-        records, summary = query_with_summary(
-            self.state_map(),
-            ctx,
-            trust_states=trust_states,
-            limit=limit,
-        )
-        records_out = [record.__dict__ for record in records]
+        gate = evaluate_query_gate(ctx)
+        if not gate.allowed:
+            denied = {
+                "count": 0,
+                "records": [],
+                "query_allowed": False,
+                "query_denial_reason": gate.denial_reason,
+                "query_override_used": gate.override_used,
+            }
+            self._emit_audit(
+                {
+                    "type": "memory.query",
+                    "tenant_id": ctx.tenant_id,
+                    "limit": limit,
+                    "trust_states": sorted(trust_states) if trust_states is not None else None,
+                    "considered": 0,
+                    "allowed": 0,
+                    "trust_state_filtered": 0,
+                    "override_used_count": 0,
+                    "denied_by_reason": {},
+                    "query_allowed": False,
+                    "query_denial_reason": gate.denial_reason,
+                    "query_override_used": gate.override_used,
+                    "uncertainty_score": ctx.uncertainty_score,
+                    "uncertainty_threshold": ctx.uncertainty_threshold,
+                }
+            )
+            return denied
+        state_map = self.state_map()
+        if structured_filter is not None and not isinstance(structured_filter, Mapping):
+            raise ValueError("structured_filter must be an object when provided")
+        if query_text is None or not str(query_text).strip():
+            if structured_filter is None:
+                records, summary = query_with_summary(
+                    state_map,
+                    ctx,
+                    trust_states=trust_states,
+                    limit=limit,
+                )
+            else:
+                records = []
+                considered = 0
+                trust_state_filtered = 0
+                override_used_count = 0
+                denied_by_reason: dict[str, int] = {}
+                for state in sorted(
+                    state_map.values(), key=lambda item: item.last_sequence, reverse=True
+                ):
+                    considered += 1
+                    if trust_states is not None and state.trust_state not in trust_states:
+                        trust_state_filtered += 1
+                        continue
+                    if not self._matches_structured_filter(state, structured_filter):
+                        continue
+                    outcome = get_outcome(state.memory_id, state_map, ctx)
+                    if outcome.record is None:
+                        reason = outcome.denial_reason or "policy_denied"
+                        denied_by_reason[reason] = denied_by_reason.get(reason, 0) + 1
+                        continue
+                    if outcome.record.override_used:
+                        override_used_count += 1
+                    records.append(outcome.record)
+                    if limit is not None and len(records) >= limit:
+                        break
+                from .retrieval import QueryAuditSummary  # local import to avoid cycle
+
+                summary = QueryAuditSummary(
+                    considered=considered,
+                    allowed=len(records),
+                    trust_state_filtered=trust_state_filtered,
+                    override_used_count=override_used_count,
+                    denied_by_reason=denied_by_reason,
+                )
+            records_out = [record.__dict__ for record in records]
+        else:
+            considered = 0
+            trust_state_filtered = 0
+            override_used_count = 0
+            denied_by_reason: dict[str, int] = {}
+            records_out: list[dict[str, Any]] = []
+            hits = self._query_index().search(
+                query_text=str(query_text),
+                tenant_id=ctx.tenant_id,
+                limit=None,
+            )
+            for hit in hits:
+                state = state_map.get(hit.memory_id)
+                if state is None:
+                    continue
+                considered += 1
+                if state.last_event_id != hit.indexed_event_id:
+                    continue
+                if trust_states is not None and state.trust_state not in trust_states:
+                    trust_state_filtered += 1
+                    continue
+                if not self._matches_structured_filter(state, structured_filter):
+                    continue
+                outcome = get_outcome(hit.memory_id, state_map, ctx)
+                if outcome.record is None:
+                    reason = outcome.denial_reason or "policy_denied"
+                    denied_by_reason[reason] = denied_by_reason.get(reason, 0) + 1
+                    continue
+                decision_record = to_retrieval_record(
+                    state,
+                    why_sound=outcome.record.why_sound,
+                    denial_reason=outcome.record.denial_reason,
+                    override_used=outcome.record.override_used,
+                    retrieval_score=hit.retrieval_score,
+                    retrieval_mode=hit.retrieval_mode,
+                    indexed_event_id=hit.indexed_event_id,
+                )
+                if decision_record.override_used:
+                    override_used_count += 1
+                records_out.append(decision_record.__dict__)
+                if limit is not None and len(records_out) >= limit:
+                    break
+            from .retrieval import QueryAuditSummary  # local import to avoid cycle
+
+            summary = QueryAuditSummary(
+                considered=considered,
+                allowed=len(records_out),
+                trust_state_filtered=trust_state_filtered,
+                override_used_count=override_used_count,
+                denied_by_reason=denied_by_reason,
+            )
+        response = {
+            "count": len(records_out),
+            "records": records_out,
+            "query_allowed": True,
+            "query_denial_reason": gate.denial_reason,
+            "query_override_used": gate.override_used,
+        }
         self._emit_audit(
             {
                 "type": "memory.query",
@@ -335,9 +515,15 @@ class MemoryRuntime:
                 "trust_state_filtered": summary.trust_state_filtered,
                 "override_used_count": summary.override_used_count,
                 "denied_by_reason": dict(summary.denied_by_reason),
+                "query_text_present": bool(query_text and str(query_text).strip()),
+                "query_allowed": True,
+                "query_denial_reason": gate.denial_reason,
+                "query_override_used": gate.override_used,
+                "uncertainty_score": ctx.uncertainty_score,
+                "uncertainty_threshold": ctx.uncertainty_threshold,
             }
         )
-        return records_out
+        return response
 
     def peek(
         self,
@@ -443,6 +629,7 @@ class MemoryRuntime:
         *,
         actor: Mapping[str, Any] | Actor,
         payload_hash: str,
+        payload: Any | None = None,
         policy_context: Mapping[str, Any] | None = None,
         trusted_context: Mapping[str, Any] | None = None,
         event_id: str | None = None,
@@ -476,6 +663,7 @@ class MemoryRuntime:
             event_type="reconsolidated",
             actor=actor,
             payload_hash=payload_hash,
+            payload=payload,
             trusted_context=trusted_context,
             event_id=event_id,
             timestamp=timestamp,

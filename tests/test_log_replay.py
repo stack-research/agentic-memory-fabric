@@ -8,7 +8,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from agentic_memory_fabric.events import EventEnvelope
+from agentic_memory_fabric.events import EventEnvelope, canonical_payload_hash
 from agentic_memory_fabric.log import AppendOnlyEventLog
 from agentic_memory_fabric.replay import LIFECYCLE_DELETED, replay_events
 from agentic_memory_fabric.sqlite_store import SQLiteEventLog
@@ -21,9 +21,13 @@ def _event(
     previous_events: list[str],
     evidence_refs: list[dict] | None = None,
     attestation: dict | None = None,
+    payload: object | None = None,
 ) -> EventEnvelope:
-    payload_char = format(sequence % 16, "x")
-    payload_hash = "sha256:" + (payload_char * 64)
+    if payload is None:
+        payload_char = format(sequence % 16, "x")
+        payload_hash = "sha256:" + (payload_char * 64)
+    else:
+        payload_hash = canonical_payload_hash(payload)
     event_data = {
         "event_id": event_id,
         "sequence": sequence,
@@ -35,6 +39,8 @@ def _event(
         "previous_events": previous_events,
         "payload_hash": payload_hash,
     }
+    if payload is not None:
+        event_data["payload"] = payload
     if evidence_refs is not None:
         event_data["evidence_refs"] = evidence_refs
     if attestation is not None:
@@ -262,7 +268,13 @@ class LogReplayTests(unittest.TestCase):
         self.assertEqual(state.attestation_trust_level, "high")
 
     def test_replay_tracks_recall_and_reconsolidation_dynamics(self) -> None:
-        created = _event(1, "11111111-1111-4111-8111-111111111111", "created", [])
+        created = _event(
+            1,
+            "11111111-1111-4111-8111-111111111111",
+            "created",
+            [],
+            payload={"topic": "alpha"},
+        )
         recalled = EventEnvelope.from_dict(
             {
                 "event_id": "22222222-2222-4222-8222-222222222222",
@@ -286,7 +298,8 @@ class LogReplayTests(unittest.TestCase):
                 "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
                 "event_type": "reconsolidated",
                 "previous_events": [recalled.event_id],
-                "payload_hash": "sha256:" + ("f" * 64),
+                "payload": {"topic": "beta"},
+                "payload_hash": canonical_payload_hash({"topic": "beta"}),
             }
         )
         state = replay_events([created, recalled, reconsolidated])[
@@ -299,6 +312,9 @@ class LogReplayTests(unittest.TestCase):
         self.assertEqual(state.last_access_tick, 30)
         self.assertEqual(state.last_recall_tick, 30)
         self.assertEqual(state.last_write_tick, 30)
+        self.assertEqual(state.payload, {"topic": "beta"})
+        self.assertEqual(state.retrieval_text, '{"topic":"beta"}')
+        self.assertTrue(state.queryable_payload_present)
 
     def test_sqlite_log_enforces_invariants_after_reopen(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

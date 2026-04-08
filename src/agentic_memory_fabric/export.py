@@ -32,6 +32,7 @@ def export_sbom_snapshot(
             "last_access_tick": record.last_access_tick,
             "last_recall_tick": record.last_recall_tick,
             "last_write_tick": record.last_write_tick,
+            "queryable_payload_present": record.queryable_payload_present,
             "denial_reason": record.denial_reason,
             "override_used": record.override_used,
         }

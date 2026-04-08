@@ -25,6 +25,10 @@ class RetrievalRecord:
     last_access_tick: int | None
     last_recall_tick: int | None
     last_write_tick: int | None
+    queryable_payload_present: bool
+    retrieval_score: float | None
+    retrieval_mode: str | None
+    indexed_event_id: str | None
     denial_reason: str | None
     override_used: bool
 
@@ -45,7 +49,16 @@ class GetOutcome:
     denial_reason: str | None = None
 
 
-def _to_retrieval_record(state: MemoryState, *, why_sound: str, denial_reason: str | None, override_used: bool) -> RetrievalRecord:
+def to_retrieval_record(
+    state: MemoryState,
+    *,
+    why_sound: str,
+    denial_reason: str | None,
+    override_used: bool,
+    retrieval_score: float | None = None,
+    retrieval_mode: str | None = None,
+    indexed_event_id: str | None = None,
+) -> RetrievalRecord:
     return RetrievalRecord(
         memory_id=state.memory_id,
         tenant_id=state.tenant_id,
@@ -61,6 +74,10 @@ def _to_retrieval_record(state: MemoryState, *, why_sound: str, denial_reason: s
         last_access_tick=state.last_access_tick,
         last_recall_tick=state.last_recall_tick,
         last_write_tick=state.last_write_tick,
+        queryable_payload_present=state.queryable_payload_present,
+        retrieval_score=retrieval_score,
+        retrieval_mode=retrieval_mode,
+        indexed_event_id=indexed_event_id,
         denial_reason=denial_reason,
         override_used=override_used,
     )
@@ -81,7 +98,7 @@ def get_outcome(
             outcome="denied",
             denial_reason=decision.denial_reason,
         )
-    record = _to_retrieval_record(
+    record = to_retrieval_record(
         state,
         why_sound=decision.why_sound,
         denial_reason=decision.denial_reason,
@@ -138,7 +155,7 @@ def query_with_summary(
         if decision.override_used:
             override_used_count += 1
         records.append(
-            _to_retrieval_record(
+            to_retrieval_record(
                 state,
                 why_sound=decision.why_sound,
                 denial_reason=decision.denial_reason,

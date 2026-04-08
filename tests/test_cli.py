@@ -14,7 +14,7 @@ if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
 
 from agentic_memory_fabric.cli import run_cli
 from agentic_memory_fabric.crypto import sign_event
-from agentic_memory_fabric.events import EventEnvelope
+from agentic_memory_fabric.events import EventEnvelope, canonical_payload_hash
 from ed25519_utils import sign_event_ed25519
 
 
@@ -27,9 +27,15 @@ class CliTests(unittest.TestCase):
         event_type: str = "created",
         previous_events: list[str] | None = None,
         attestation: dict | None = None,
+        payload: object | None = None,
     ) -> str:
         if previous_events is None:
             previous_events = []
+        payload_hash = (
+            canonical_payload_hash(payload)
+            if payload is not None
+            else "sha256:" + ("a" * 64)
+        )
         event = EventEnvelope.from_dict(
             {
                 "event_id": event_id,
@@ -40,7 +46,8 @@ class CliTests(unittest.TestCase):
                 "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
                 "event_type": event_type,
                 "previous_events": previous_events,
-                "payload_hash": "sha256:" + ("a" * 64),
+                "payload_hash": payload_hash,
+                **({"payload": payload} if payload is not None else {}),
             }
         )
         event_dict = event.to_dict()
@@ -110,6 +117,7 @@ class CliTests(unittest.TestCase):
                 stdout=out_default,
             )
             query_default = json.loads(out_default.getvalue())
+            self.assertTrue(query_default["query_allowed"])
             self.assertEqual(query_default["count"], 0)
 
             out_override = io.StringIO()
@@ -126,6 +134,7 @@ class CliTests(unittest.TestCase):
                 stdout=out_override,
             )
             query_override = json.loads(out_override.getvalue())
+            self.assertTrue(query_override["query_allowed"])
             self.assertEqual(query_override["count"], 1)
 
             out_explain = io.StringIO()
@@ -243,6 +252,7 @@ class CliTests(unittest.TestCase):
                 stdout=out_query,
             )
             payload = json.loads(out_query.getvalue())
+            self.assertTrue(payload["query_allowed"])
             self.assertEqual(payload["count"], 1)
             self.assertEqual(payload["records"][0]["signature_state"], "verified")
 
@@ -285,6 +295,7 @@ class CliTests(unittest.TestCase):
                 stdout=out_first,
             )
             first_payload = json.loads(out_first.getvalue())
+            self.assertTrue(first_payload["query_allowed"])
             self.assertEqual(first_payload["count"], 1)
             self.assertEqual(first_payload["records"][0]["version"], 1)
 
@@ -322,6 +333,7 @@ class CliTests(unittest.TestCase):
                 stdout=out_second,
             )
             second_payload = json.loads(out_second.getvalue())
+            self.assertTrue(second_payload["query_allowed"])
             self.assertEqual(second_payload["count"], 1)
             self.assertEqual(second_payload["records"][0]["version"], 2)
 
@@ -427,6 +439,7 @@ class CliTests(unittest.TestCase):
                 stdout=out_denied,
             )
             denied_payload = json.loads(out_denied.getvalue())
+            self.assertTrue(denied_payload["query_allowed"])
             self.assertEqual(denied_payload["count"], 0)
 
             out_override = io.StringIO()
@@ -447,6 +460,7 @@ class CliTests(unittest.TestCase):
                 stdout=out_override,
             )
             override_payload = json.loads(out_override.getvalue())
+            self.assertTrue(override_payload["query_allowed"])
             self.assertEqual(override_payload["count"], 1)
             self.assertEqual(
                 override_payload["records"][0]["denial_reason"],
@@ -494,6 +508,7 @@ class CliTests(unittest.TestCase):
                 stdout=out_denied,
             )
             denied_payload = json.loads(out_denied.getvalue())
+            self.assertTrue(denied_payload["query_allowed"])
             self.assertEqual(denied_payload["count"], 0)
 
             out_override = io.StringIO()
@@ -514,11 +529,164 @@ class CliTests(unittest.TestCase):
                 stdout=out_override,
             )
             override_payload = json.loads(out_override.getvalue())
+            self.assertTrue(override_payload["query_allowed"])
             self.assertEqual(override_payload["count"], 1)
             self.assertEqual(
                 override_payload["records"][0]["denial_reason"],
                 "attestation_issuer_default_deny",
             )
+
+    def test_cli_query_uncertainty_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = str(pathlib.Path(tmpdir) / "state.json")
+            keyring_json = '{"dev-key":{"key":"super-secret","status":"active"}}'
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "ingest-event",
+                    "--event-json",
+                    self._signed_event_json(),
+                ],
+                stdout=io.StringIO(),
+            )
+
+            out_missing = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "query",
+                    "--policy-json",
+                    '{"uncertainty_threshold": 0.8}',
+                ],
+                stdout=out_missing,
+            )
+            missing_payload = json.loads(out_missing.getvalue())
+            self.assertFalse(missing_payload["query_allowed"])
+            self.assertEqual(
+                missing_payload["query_denial_reason"],
+                "uncertainty_signal_required_default_deny",
+            )
+            self.assertEqual(missing_payload["count"], 0)
+
+            out_override = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "--capabilities-json",
+                    '["override_retrieval_denials"]',
+                    "query",
+                    "--policy-json",
+                    '{"uncertainty_threshold": 0.8, "uncertainty_score": 0.4, "allow_low_uncertainty_override": true}',
+                ],
+                stdout=out_override,
+            )
+            override_payload = json.loads(out_override.getvalue())
+            self.assertTrue(override_payload["query_allowed"])
+            self.assertTrue(override_payload["query_override_used"])
+            self.assertEqual(
+                override_payload["query_denial_reason"],
+                "uncertainty_below_threshold_default_deny",
+            )
+            self.assertEqual(override_payload["count"], 1)
+
+    def test_cli_semantic_query_returns_search_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = str(pathlib.Path(tmpdir) / "state.json")
+            keyring_json = '{"dev-key":{"key":"super-secret","status":"active"}}'
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "ingest-event",
+                    "--event-json",
+                    self._signed_event_json(
+                        payload={"topic": "memory fabric", "note": "semantic query"}
+                    ),
+                ],
+                stdout=io.StringIO(),
+            )
+            out_query = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--keyring-json",
+                    keyring_json,
+                    "query",
+                    "--query-text",
+                    "memory fabric",
+                    "--structured-filter-json",
+                    '{"queryable_payload_present": true}',
+                ],
+                stdout=out_query,
+            )
+            payload = json.loads(out_query.getvalue())
+            self.assertEqual(payload["count"], 1)
+            self.assertEqual(payload["records"][0]["retrieval_mode"], "lexical_v1")
+            self.assertGreater(payload["records"][0]["retrieval_score"], 0.0)
+
+    def test_cli_semantic_query_over_imported_payloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_file = str(pathlib.Path(tmpdir) / "state.json")
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "import-records",
+                    "--records-json",
+                    (
+                        '[{"memory_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",'
+                        '"payload":{"topic":"imported memory"},"source_id":"seed-1"}]'
+                    ),
+                    "--actor-json",
+                    '{"id":"migration-bot","kind":"service"}',
+                    "--default-timestamp",
+                    "2026-03-22T00:00:00Z",
+                ],
+                stdout=io.StringIO(),
+            )
+            out_query = io.StringIO()
+            run_cli(
+                [
+                    "--state-file",
+                    state_file,
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--capabilities-json",
+                    '["override_retrieval_denials"]',
+                    "query",
+                    "--query-text",
+                    "imported memory",
+                ],
+                stdout=out_query,
+            )
+            payload = json.loads(out_query.getvalue())
+            self.assertEqual(payload["count"], 1)
+            self.assertTrue(payload["records"][0]["queryable_payload_present"])
+            self.assertEqual(payload["records"][0]["retrieval_mode"], "lexical_v1")
 
     def test_cli_peek_recall_and_reconsolidate(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:

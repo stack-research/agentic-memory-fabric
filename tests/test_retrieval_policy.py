@@ -8,7 +8,11 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from agentic_memory_fabric.policy import OVERRIDE_CAPABILITY, PolicyContext
+from agentic_memory_fabric.policy import (
+    OVERRIDE_CAPABILITY,
+    PolicyContext,
+    evaluate_query_gate,
+)
 from agentic_memory_fabric.decay import DecayPolicy
 from agentic_memory_fabric.replay import LIFECYCLE_ACTIVE, LIFECYCLE_DELETED, MemoryState
 from agentic_memory_fabric.retrieval import get, get_outcome, query, query_with_summary
@@ -243,6 +247,43 @@ class RetrievalPolicyTests(unittest.TestCase):
     def test_attestation_policy_is_opt_in_by_default(self) -> None:
         records = query(self._state_map(), PolicyContext(tenant_id="tenant-alpha"))
         self.assertEqual([record.memory_id for record in records], ["mem-trusted"])
+
+    def test_query_gate_allows_when_threshold_not_configured(self) -> None:
+        decision = evaluate_query_gate(PolicyContext(tenant_id="tenant-alpha"))
+        self.assertTrue(decision.allowed)
+        self.assertIsNone(decision.denial_reason)
+
+    def test_query_gate_denies_missing_signal_when_threshold_is_set(self) -> None:
+        decision = evaluate_query_gate(
+            PolicyContext(tenant_id="tenant-alpha", uncertainty_threshold=0.8)
+        )
+        self.assertFalse(decision.allowed)
+        self.assertEqual(decision.denial_reason, "uncertainty_signal_required_default_deny")
+
+    def test_query_gate_denies_below_threshold_and_allows_override(self) -> None:
+        denied = evaluate_query_gate(
+            PolicyContext(
+                tenant_id="tenant-alpha",
+                uncertainty_score=0.4,
+                uncertainty_threshold=0.8,
+            )
+        )
+        self.assertFalse(denied.allowed)
+        self.assertEqual(denied.denial_reason, "uncertainty_below_threshold_default_deny")
+
+        override = evaluate_query_gate(
+            PolicyContext(
+                tenant_id="tenant-alpha",
+                uncertainty_score=0.4,
+                uncertainty_threshold=0.8,
+                allow_low_uncertainty_override=True,
+                capabilities=frozenset({OVERRIDE_CAPABILITY}),
+                trusted_subject=True,
+            )
+        )
+        self.assertTrue(override.allowed)
+        self.assertEqual(override.denial_reason, "uncertainty_below_threshold_default_deny")
+        self.assertTrue(override.override_used)
 
     def test_require_attestation_denies_unattested(self) -> None:
         records = query(

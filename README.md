@@ -70,11 +70,47 @@ python3 -m agentic_memory_fabric.cli --state-file .amf-state.json query \
   --capabilities-json '["override_retrieval_denials"]' \
   --keyring-json '{"dev-key":{"key":"super-secret","status":"active"}}'
 
+python3 -m agentic_memory_fabric.cli --state-file .amf-state.json query \
+  --tenant-id tenant-alpha \
+  --keyring-json '{"dev-key":{"key":"super-secret","status":"active"}}' \
+  --policy-json '{"uncertainty_threshold": 0.8, "uncertainty_score": 0.4}'
+
+python3 -m agentic_memory_fabric.cli --state-file .amf-state.json query \
+  --tenant-id tenant-alpha \
+  --keyring-json '{"dev-key":{"key":"super-secret","status":"active"}}' \
+  --policy-json '{"uncertainty_threshold": 0.8, "uncertainty_score": 0.9}'
+
+python3 -m agentic_memory_fabric.cli --state-file .amf-state.json query \
+  --tenant-id tenant-alpha \
+  --keyring-json '{"dev-key":{"key":"super-secret","status":"active"}}' \
+  --query-text "memory fabric" \
+  --structured-filter-json '{"queryable_payload_present": true}'
+
 python3 -m agentic_memory_fabric.cli --state-file .amf-state.json recall \
   --tenant-id tenant-alpha \
   --memory-id aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa \
   --actor-json '{"id":"svc-memory","kind":"service"}'
 ```
+
+`query` stays backward-compatible. If `query_text` is omitted, AMF returns the inventory-style listing over the current sound set. If `query_text` is present, AMF searches only current heads whose governed inline payloads can materialize `retrieval_text`, then re-checks normal retrieval policy before returning each hit.
+
+## Inline Payloads and Semantic-Ready Search
+
+Events may now carry optional inline `payload` content alongside `payload_hash`. When payload is present, AMF verifies the canonical hash, materializes the payload in the read model, derives deterministic `retrieval_text`, and indexes only current queryable heads.
+
+This milestone keeps the query baseline deterministic and in-process:
+
+- retrieval mode is `lexical_v1`
+- score is token overlap plus an exact-substring bonus
+- stale index hits are discarded if `indexed_event_id` no longer matches the current head
+- uncertainty gating still runs before any index lookup
+
+Semantic query records include:
+
+- `retrieval_score`
+- `retrieval_mode`
+- `indexed_event_id`
+- `queryable_payload_present`
 
 ### CLI walkthrough scripts
 
@@ -86,6 +122,16 @@ For end-to-end, human-readable examples (with sectioned output and pretty-printe
 - `examples/real-world-cli-trusted-text.sh`
 - `examples/real-world-cli-poisoning-attempt.sh`
 - `examples/real-world-cli-decay-half-life.sh`
+
+## Local Dev Vector Backend
+
+The shipped runtime still uses the deterministic in-memory query index by default. For the next phase, the repo now includes [`docker-compose.pgvector.yml`](/Users/macos-user/.projects/stack-research/agentic-memory-fabric/docker-compose.pgvector.yml) as local-dev scaffolding for a Postgres + `pgvector` backend:
+
+```bash
+docker compose -f docker-compose.pgvector.yml up -d
+```
+
+That container is optional. Default tests and library flows do not require it.
 
 ## Audit Hooks
 

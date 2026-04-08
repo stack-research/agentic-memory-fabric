@@ -29,6 +29,10 @@ class PolicyContext:
     require_attestation: bool = False
     min_attestation_trust_level: str | None = None
     allowed_attestation_issuers: frozenset[str] = field(default_factory=frozenset)
+    uncertainty_score: float | None = None
+    uncertainty_threshold: float | None = None
+    uncertainty_reason: str | None = None
+    allow_low_uncertainty_override: bool = False
 
     def can_override(self) -> bool:
         if not self.trusted_subject:
@@ -46,6 +50,37 @@ class PolicyDecision:
     why_sound: str
     denial_reason: str | None = None
     override_used: bool = False
+
+
+@dataclass(frozen=True)
+class QueryGateDecision:
+    allowed: bool
+    denial_reason: str | None = None
+    override_used: bool = False
+
+
+def evaluate_query_gate(policy_context: PolicyContext) -> QueryGateDecision:
+    threshold = policy_context.uncertainty_threshold
+    if threshold is None:
+        return QueryGateDecision(allowed=True)
+
+    denial_reason: str | None = None
+    score = policy_context.uncertainty_score
+    if score is None:
+        denial_reason = "uncertainty_signal_required_default_deny"
+    elif score < threshold:
+        denial_reason = "uncertainty_below_threshold_default_deny"
+
+    if denial_reason is None:
+        return QueryGateDecision(allowed=True)
+
+    if policy_context.allow_low_uncertainty_override and policy_context.can_override():
+        return QueryGateDecision(
+            allowed=True,
+            denial_reason=denial_reason,
+            override_used=True,
+        )
+    return QueryGateDecision(allowed=False, denial_reason=denial_reason)
 
 
 def evaluate_retrieval_policy(state: MemoryState, policy_context: PolicyContext) -> PolicyDecision:

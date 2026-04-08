@@ -8,7 +8,7 @@ SRC_ROOT = PROJECT_ROOT / "src"
 if str(SRC_ROOT) not in sys.path:
     sys.path.insert(0, str(SRC_ROOT))
 
-from agentic_memory_fabric.events import validate_event_envelope
+from agentic_memory_fabric.events import canonical_payload_hash, validate_event_envelope
 
 
 def _valid_event() -> dict:
@@ -28,7 +28,11 @@ def _valid_event() -> dict:
 
 class EventSchemaTests(unittest.TestCase):
     def test_event_schema_file_contains_required_structure(self) -> None:
-        for schema_name in ("event-envelope.v0.json", "event-envelope.v1.json"):
+        for schema_name in (
+            "event-envelope.v0.json",
+            "event-envelope.v1.json",
+            "event-envelope.v2.json",
+        ):
             schema_path = PROJECT_ROOT / "schemas" / schema_name
             schema = json.loads(schema_path.read_text(encoding="utf-8"))
 
@@ -56,6 +60,8 @@ class EventSchemaTests(unittest.TestCase):
             if schema_name.endswith("v1.json"):
                 self.assertIn("recalled", event_types)
                 self.assertIn("reconsolidated", event_types)
+            if schema_name.endswith("v2.json"):
+                self.assertIn("payload", schema["properties"])
             self.assertIn("signature", schema["properties"])
             self.assertIn("attestation", schema["properties"])
             self.assertIn("ed25519", schema["properties"]["signature"]["properties"]["alg"]["enum"])
@@ -96,6 +102,18 @@ class EventSchemaTests(unittest.TestCase):
             "claims": {"scope": "test"},
         }
         validate_event_envelope(event)
+
+    def test_validate_event_envelope_accepts_inline_payload_when_hash_matches(self) -> None:
+        event = _valid_event()
+        event["payload"] = {"topic": "alpha", "steps": ["one", "two"]}
+        event["payload_hash"] = canonical_payload_hash(event["payload"])
+        validate_event_envelope(event)
+
+    def test_validate_event_envelope_rejects_inline_payload_hash_mismatch(self) -> None:
+        event = _valid_event()
+        event["payload"] = {"topic": "alpha"}
+        with self.assertRaisesRegex(ValueError, "canonical hash of payload"):
+            validate_event_envelope(event)
 
     def test_validate_event_envelope_rejects_invalid_signature_algorithm(self) -> None:
         event = _valid_event()

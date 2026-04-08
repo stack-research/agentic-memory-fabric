@@ -112,6 +112,8 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
 
     p_query = sub.add_parser("query")
     p_query.add_argument("--policy-json", default="{}")
+    p_query.add_argument("--query-text", default=None)
+    p_query.add_argument("--structured-filter-json", default=None)
     p_query.add_argument("--trust-states-json", default="null")
     p_query.add_argument("--limit", type=int, default=None)
 
@@ -132,6 +134,7 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
     p_reconsolidate.add_argument("--event-id", default=None)
     p_reconsolidate.add_argument("--timestamp-json", default=None)
     p_reconsolidate.add_argument("--evidence-refs-json", default=None)
+    p_reconsolidate.add_argument("--payload-json", default=None)
     p_reconsolidate.add_argument("--signature-json", default=None)
     p_reconsolidate.add_argument("--attestation-json", default=None)
 
@@ -206,13 +209,19 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
             if not isinstance(policy_context, dict):
                 raise ValueError("--policy-json must decode to a JSON object")
             policy_context["tenant_id"] = args.tenant_id
-            records = runtime.query(
+            result = runtime.query(
                 policy_context=policy_context,
                 trusted_context=trusted_context,
+                query_text=args.query_text,
+                structured_filter=(
+                    _load_json_arg(args.structured_filter_json)
+                    if args.structured_filter_json is not None
+                    else None
+                ),
                 trust_states=set(trust_states_raw) if trust_states_raw is not None else None,
                 limit=args.limit,
             )
-            out.write(json.dumps({"count": len(records), "records": records}, sort_keys=True) + "\n")
+            out.write(json.dumps(result, sort_keys=True) + "\n")
             return 0
 
         if args.command == "peek":
@@ -252,6 +261,9 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
                 args.memory_id,
                 actor=_load_json_arg(args.actor_json),
                 payload_hash=args.payload_hash,
+                payload=(
+                    _load_json_arg(args.payload_json) if args.payload_json is not None else None
+                ),
                 policy_context={"tenant_id": args.tenant_id},
                 trusted_context=trusted_context,
                 event_id=args.event_id,

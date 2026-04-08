@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Mapping, Sequence
@@ -31,6 +33,37 @@ VALID_EVIDENCE_TYPES = frozenset(
 )
 VALID_SIGNATURE_ALGS = frozenset({"hmac-sha256", "ed25519"})
 VALID_ATTESTATION_TRUST_LEVELS = frozenset({"low", "medium", "high"})
+
+
+def _is_json_value(value: Any) -> bool:
+    if value is None or isinstance(value, (str, bool, int, float)):
+        return True
+    if isinstance(value, Mapping):
+        return all(isinstance(key, str) and _is_json_value(item) for key, item in value.items())
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        return all(_is_json_value(item) for item in value)
+    return False
+
+
+def canonical_json_dumps(value: Any) -> str:
+    if not _is_json_value(value):
+        raise ValueError("payload must be JSON-serializable")
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def canonical_payload_hash(value: Any) -> str:
+    digest = hashlib.sha256(canonical_json_dumps(value).encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
+
+
+def payload_to_retrieval_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    text = canonical_json_dumps(value).strip()
+    return text or None
 
 
 def _as_uuid(value: str, *, field_name: str) -> str:
@@ -236,6 +269,7 @@ class EventEnvelope:
     event_type: str
     previous_events: tuple[str, ...] = field(default_factory=tuple)
     payload_hash: str = ""
+    payload: Any | None = None
     evidence_refs: tuple[EvidenceRef, ...] = field(default_factory=tuple)
     trust_transition: TrustTransition | None = None
     signature: EventSignature | None = None
@@ -267,6 +301,7 @@ class EventEnvelope:
             event_type=data["event_type"],
             previous_events=tuple(data["previous_events"]),
             payload_hash=data["payload_hash"],
+            payload=data.get("payload"),
             evidence_refs=evidence_refs,
             trust_transition=trust_transition,
             signature=signature,
@@ -285,6 +320,8 @@ class EventEnvelope:
             "previous_events": list(self.previous_events),
             "payload_hash": self.payload_hash,
         }
+        if self.payload is not None:
+            out["payload"] = self.payload
         if self.evidence_refs:
             out["evidence_refs"] = [ref.to_dict() for ref in self.evidence_refs]
         if self.trust_transition is not None:
@@ -348,6 +385,11 @@ def validate_event_envelope(data: Mapping[str, Any]) -> None:
     hash_body = payload_hash.split("sha256:", 1)[1]
     if not all(ch in "0123456789abcdefABCDEF" for ch in hash_body):
         raise ValueError("payload_hash must match sha256:<64_hex_chars>")
+    payload = data.get("payload")
+    if payload is not None:
+        expected_hash = canonical_payload_hash(payload)
+        if expected_hash != payload_hash:
+            raise ValueError("payload_hash must match the canonical hash of payload when payload is provided")
 
     evidence_refs = data.get("evidence_refs")
     if evidence_refs is not None:

@@ -14,7 +14,7 @@ if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
 from agentic_memory_fabric.runtime import open_runtime
 from agentic_memory_fabric.service import ServiceApp, run_http_server
 from agentic_memory_fabric.crypto import KEY_STATUS_REVOKED, KeyMaterial, sign_event
-from agentic_memory_fabric.events import EventEnvelope
+from agentic_memory_fabric.events import EventEnvelope, canonical_payload_hash
 from ed25519_utils import sign_event_ed25519
 
 TENANT_HEADER = {"x-tenant-id": "tenant-alpha"}
@@ -43,9 +43,15 @@ class ServiceApiTests(unittest.TestCase):
         attestation: dict | None = None,
         key_id: str = "dev-key",
         key: bytes = b"super-secret",
+        payload: object | None = None,
     ) -> dict:
         if previous_events is None:
             previous_events = []
+        payload_hash = (
+            canonical_payload_hash(payload)
+            if payload is not None
+            else "sha256:" + ("a" * 64)
+        )
         event = EventEnvelope.from_dict(
             {
                 "event_id": event_id,
@@ -56,7 +62,8 @@ class ServiceApiTests(unittest.TestCase):
                 "memory_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
                 "event_type": event_type,
                 "previous_events": previous_events,
-                "payload_hash": "sha256:" + ("a" * 64),
+                "payload_hash": payload_hash,
+                **({"payload": payload} if payload is not None else {}),
             }
         )
         if attestation is not None:
@@ -126,6 +133,7 @@ class ServiceApiTests(unittest.TestCase):
             headers=TENANT_HEADER,
         )
         self.assertEqual(status_default, 200)
+        self.assertTrue(payload_default["query_allowed"])
         self.assertEqual(payload_default["count"], 0)
 
         status_override, payload_override = app.handle_request(
@@ -135,6 +143,7 @@ class ServiceApiTests(unittest.TestCase):
             headers={"x-tenant-id": "tenant-alpha", "x-auth-token": "token-auditor"},
         )
         self.assertEqual(status_override, 200)
+        self.assertTrue(payload_override["query_allowed"])
         self.assertEqual(payload_override["count"], 1)
         self.assertEqual(
             payload_override["records"][0]["denial_reason"],
@@ -149,6 +158,95 @@ class ServiceApiTests(unittest.TestCase):
         )
         self.assertEqual(status_snapshot, 200)
         self.assertEqual(payload_snapshot["count"], 1)
+
+    def test_query_uncertainty_gate_denies_and_allows_override(self) -> None:
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        app = ServiceApp(runtime=runtime, auth_tokens=AUTH_TOKENS)
+        app.handle_request(
+            "POST",
+            "/ingest/event",
+            json.dumps({"event": self._signed_event()}).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        status_low, payload_low = app.handle_request(
+            "POST",
+            "/query",
+            b'{"policy_context":{"uncertainty_threshold":0.8,"uncertainty_score":0.4}}',
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status_low, 200)
+        self.assertFalse(payload_low["query_allowed"])
+        self.assertEqual(payload_low["query_denial_reason"], "uncertainty_below_threshold_default_deny")
+        self.assertEqual(payload_low["count"], 0)
+
+        status_override, payload_override = app.handle_request(
+            "POST",
+            "/query",
+            (
+                b'{"policy_context":{"uncertainty_threshold":0.8,"uncertainty_score":0.4,'
+                b'"allow_low_uncertainty_override":true}}'
+            ),
+            headers={"x-tenant-id": "tenant-alpha", "x-auth-token": "token-auditor"},
+        )
+        self.assertEqual(status_override, 200)
+        self.assertTrue(payload_override["query_allowed"])
+        self.assertEqual(payload_override["query_denial_reason"], "uncertainty_below_threshold_default_deny")
+        self.assertTrue(payload_override["query_override_used"])
+        self.assertEqual(payload_override["count"], 1)
+
+    def test_semantic_query_endpoint_returns_search_metadata(self) -> None:
+        runtime = open_runtime(keyring={"dev-key": b"super-secret"})
+        app = ServiceApp(runtime=runtime)
+        app.handle_request(
+            "POST",
+            "/ingest/event",
+            json.dumps(
+                {
+                    "event": self._signed_event(
+                        payload={"topic": "memory fabric", "note": "semantic baseline"}
+                    )
+                }
+            ).encode("utf-8"),
+            headers=TENANT_HEADER,
+        )
+        status, payload = app.handle_request(
+            "POST",
+            "/query",
+            b'{"query_text":"memory fabric"}',
+            headers=TENANT_HEADER,
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["records"][0]["retrieval_mode"], "lexical_v1")
+        self.assertGreater(payload["records"][0]["retrieval_score"], 0.0)
+        self.assertEqual(
+            payload["records"][0]["indexed_event_id"],
+            "99999999-9999-4999-8999-999999999999",
+        )
+
+    def test_semantic_query_over_imported_payloads(self) -> None:
+        app = ServiceApp(auth_tokens=AUTH_TOKENS)
+        app.handle_request(
+            "POST",
+            "/ingest/import",
+            (
+                b'{"records":[{"memory_id":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",'
+                b'"payload":{"topic":"imported memory"},"source_id":"seed-1"}],'
+                b'"actor":{"id":"migration-bot","kind":"service"},'
+                b'"default_timestamp":"2026-03-22T00:00:00Z"}'
+            ),
+            headers=TENANT_HEADER,
+        )
+        status, payload = app.handle_request(
+            "POST",
+            "/query",
+            b'{"query_text":"imported memory"}',
+            headers={"x-tenant-id": "tenant-alpha", "x-auth-token": "token-auditor"},
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["count"], 1)
+        self.assertTrue(payload["records"][0]["queryable_payload_present"])
+        self.assertEqual(payload["records"][0]["retrieval_mode"], "lexical_v1")
 
     def test_peek_recall_and_reconsolidate_endpoints(self) -> None:
         runtime = open_runtime(keyring={"dev-key": b"super-secret"})
@@ -224,6 +322,7 @@ class ServiceApiTests(unittest.TestCase):
             headers=TENANT_HEADER,
         )
         self.assertEqual(status, 200)
+        self.assertTrue(payload["query_allowed"])
         self.assertEqual(payload["count"], 0)
 
     def test_explain_and_provenance_endpoints(self) -> None:

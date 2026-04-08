@@ -139,13 +139,15 @@ class ServiceApp:
             )
 
         if method == "POST" and route == "/query":
-            records = self.runtime.query(
+            query_result = self.runtime.query(
                 policy_context=policy_context,
                 trusted_context=trusted_context,
+                query_text=payload.get("query_text"),
+                structured_filter=payload.get("structured_filter"),
                 trust_states=set(payload["trust_states"]) if payload.get("trust_states") else None,
                 limit=payload.get("limit"),
             )
-            return respond(HTTPStatus.OK, {"count": len(records), "records": records})
+            return respond(HTTPStatus.OK, query_result)
 
         if method == "POST" and route.startswith("/memory/") and route.endswith("/peek"):
             parts = route.split("/")
@@ -184,6 +186,7 @@ class ServiceApp:
                 memory_id,
                 actor=payload["actor"],
                 payload_hash=payload["payload_hash"],
+                payload=payload.get("payload"),
                 policy_context=policy_context,
                 trusted_context=trusted_context,
                 event_id=payload.get("event_id"),

@@ -7,7 +7,7 @@ import sqlite3
 from pathlib import Path
 
 from .events import EventEnvelope
-from .log import SignatureVerifier
+from .log import PendingQuerySync, QuerySyncTask, SignatureVerifier
 
 
 def _table_column_names(conn: sqlite3.Connection, table: str) -> set[str]:
@@ -62,7 +62,9 @@ class SQLiteEventLog:
         event: EventEnvelope,
         *,
         signature_verifier: SignatureVerifier | None = None,
+        query_sync_tasks: tuple[QuerySyncTask, ...] | None = None,
     ) -> None:
+        del query_sync_tasks
         expected_sequence = len(self) + 1
         if event.sequence != expected_sequence:
             raise ValueError(
@@ -206,3 +208,14 @@ class SQLiteEventLog:
 
     def close(self) -> None:
         self._conn.close()
+
+    def pending_query_sync(self, *, limit: int | None = None) -> tuple[PendingQuerySync, ...]:
+        del limit
+        return ()
+
+    def mark_query_sync_processed(self, row_ids: tuple[int, ...]) -> None:
+        del row_ids
+        return
+
+    def query_sync_lag_count(self) -> int:
+        return 0

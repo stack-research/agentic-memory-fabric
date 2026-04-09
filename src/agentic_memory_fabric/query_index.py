@@ -44,6 +44,10 @@ class QueryBackendError(RuntimeError):
     """Raised when the semantic query backend is unavailable or unhealthy."""
 
 
+class QuerySyncError(RuntimeError):
+    """Raised when durable query-sync processing fails."""
+
+
 class TextEmbedder(Protocol):
     dimension: int
 

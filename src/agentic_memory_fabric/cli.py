@@ -57,12 +57,18 @@ def _load_state(
     *,
     keyring: dict[str, bytes | str | Mapping[str, Any] | KeyMaterial],
     audit_sink: AuditSink | None = None,
+    event_backend: str | None = None,
+    event_backend_dsn: str | None = None,
+    event_backend_schema: str = "amf_core",
+    bootstrap_event_backend: bool = False,
     query_backend: str = "inmemory",
     query_backend_dsn: str | None = None,
     query_backend_schema: str = "amf_query",
     bootstrap_query_backend: bool = False,
     embedder: TextEmbedder | None = None,
 ) -> MemoryRuntime:
+    if event_backend not in {None, "memory"}:
+        raise ValueError("_load_state only supports in-memory state files")
     runtime = MemoryRuntime(
         keyring=dict(keyring),
         query_backend_name=query_backend,
@@ -116,6 +122,10 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
     parser.add_argument("--query-backend-dsn", default=None)
     parser.add_argument("--query-backend-schema", default="amf_query")
     parser.add_argument("--bootstrap-query-backend", action="store_true")
+    parser.add_argument("--event-backend", default=None)
+    parser.add_argument("--event-backend-dsn", default=None)
+    parser.add_argument("--event-backend-schema", default="amf_core")
+    parser.add_argument("--bootstrap-event-backend", action="store_true")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_ingest = sub.add_parser("ingest-event")
@@ -252,9 +262,28 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
     state_path: Path | None
     keyring = _decode_keyring(args.keyring_json)
     audit_sink = _build_audit_sink(Path(args.audit_jsonl) if args.audit_jsonl else None)
-    if args.db:
+    if args.event_backend == "memory" and args.db:
+        raise ValueError("--db cannot be combined with --event-backend memory")
+    if args.event_backend == "sqlite" and not args.db:
+        raise ValueError("--db is required when --event-backend sqlite is used")
+    if args.event_backend == "postgres":
+        runtime = open_runtime(
+            event_backend="postgres",
+            event_backend_dsn=args.event_backend_dsn,
+            event_backend_schema=args.event_backend_schema,
+            bootstrap_event_backend=args.bootstrap_event_backend,
+            keyring=keyring,
+            audit_sink=audit_sink,
+            query_backend=args.query_backend,
+            query_backend_dsn=args.query_backend_dsn,
+            query_backend_schema=args.query_backend_schema,
+            bootstrap_query_backend=args.bootstrap_query_backend,
+        )
+        state_path = None
+    elif args.db:
         runtime = open_runtime(
             db_path=args.db,
+            event_backend="sqlite",
             keyring=keyring,
             audit_sink=audit_sink,
             query_backend=args.query_backend,
@@ -269,6 +298,10 @@ def run_cli(argv: list[str] | None = None, *, stdout: TextIO | None = None) -> i
             state_path,
             keyring=keyring,
             audit_sink=audit_sink,
+            event_backend=args.event_backend,
+            event_backend_dsn=args.event_backend_dsn,
+            event_backend_schema=args.event_backend_schema,
+            bootstrap_event_backend=args.bootstrap_event_backend,
             query_backend=args.query_backend,
             query_backend_dsn=args.query_backend_dsn,
             query_backend_schema=args.query_backend_schema,

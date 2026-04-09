@@ -20,19 +20,22 @@ from .graph import (
     expanded_retrieval_score,
 )
 from .importer import append_imported_records
-from .log import AppendOnlyEventLog, EventLog
+from .log import AppendOnlyEventLog, EventLog, QuerySyncTask
 from .policy import (
     ATTESTATION_TRUST_LEVELS,
     PolicyContext,
     evaluate_query_gate,
 )
 from .pgvector_backend import PgVectorQueryBackend
+from .postgres_store import PostgresEventLog
+from .postgres_support import PostgresBackendError
 from .promotion import PromotionAssessment, compute_promotion_score
 from .query_index import (
     DeterministicTextEmbedder,
     InMemoryQueryIndex,
     QueryBackend,
     QueryBackendError,
+    QuerySyncError,
     TextEmbedder,
 )
 from .replay import MemoryState, replay_events
@@ -85,7 +88,7 @@ class MemoryRuntime:
                 bootstrap=self.bootstrap_query_backend,
             )
             if len(self.log) > 0:
-                self._refresh_query_backend()
+                self.sync_query_index(full_refresh=self.bootstrap_query_backend)
 
     def _key_resolver(
         self, key_id: str
@@ -626,12 +629,116 @@ class MemoryRuntime:
         except Exception as exc:  # pragma: no cover - defensive boundary
             raise QueryBackendError(f"semantic query backend refresh failed: {exc}") from exc
 
+    def _query_sync_mode(self) -> str:
+        if self.query_backend_name != "pgvector":
+            return "not_applicable"
+        if isinstance(self.log, PostgresEventLog):
+            return "durable_outbox"
+        return "direct_refresh"
+
+    def _query_sync_tasks_for_event(
+        self,
+        event: EventEnvelope,
+        *,
+        pre_state_map: Mapping[str, MemoryState] | None = None,
+    ) -> tuple[QuerySyncTask, ...]:
+        tasks: list[QuerySyncTask] = [
+            QuerySyncTask(
+                tenant_id=event.tenant_id,
+                memory_id=event.memory_id,
+                indexed_event_id=event.event_id,
+                reason=event.event_type,
+            )
+        ]
+        state_map = pre_state_map if pre_state_map is not None else self.state_map()
+        if event.event_type == "merge_approved":
+            proposal_state = state_map.get(event.memory_id)
+            if proposal_state is not None:
+                for source_memory_id in proposal_state.resolved_from_memory_ids:
+                    source_state = state_map.get(source_memory_id)
+                    if source_state is None:
+                        continue
+                    tasks.append(
+                        QuerySyncTask(
+                            tenant_id=source_state.tenant_id,
+                            memory_id=source_state.memory_id,
+                            indexed_event_id=source_state.last_event_id,
+                            reason="merge_approved_source_state",
+                        )
+                    )
+        deduped: dict[tuple[str, str], QuerySyncTask] = {}
+        for task in tasks:
+            deduped[(task.tenant_id, task.memory_id)] = task
+        return tuple(deduped.values())
+
+    def sync_query_index(
+        self,
+        *,
+        full_refresh: bool = False,
+        limit: int | None = None,
+        memory_ids: tuple[str, ...] | None = None,
+    ) -> int:
+        if self.query_backend_name != "pgvector":
+            return 0
+        if limit is not None and limit < 1:
+            raise ValueError("limit must be >= 1 when provided")
+        state_map = self.state_map()
+        sync_mode = self._query_sync_mode()
+        processed = 0
+        backend = self._query_index()
+        if isinstance(self.log, PostgresEventLog) and not full_refresh and memory_ids is None:
+            pending = self.log.pending_query_sync(limit=limit)
+            if pending:
+                try:
+                    backend.refresh(
+                        state_map,
+                        memory_ids=tuple(dict.fromkeys(item.memory_id for item in pending)),
+                    )
+                    self.log.mark_query_sync_processed(tuple(item.id for item in pending))
+                except QueryBackendError as exc:
+                    raise QuerySyncError(str(exc)) from exc
+                except PostgresBackendError as exc:
+                    raise QuerySyncError(str(exc)) from exc
+                processed = len(pending)
+        else:
+            try:
+                backend.refresh(state_map, memory_ids=memory_ids if not full_refresh else None)
+            except QueryBackendError as exc:
+                raise QuerySyncError(str(exc)) from exc
+            if isinstance(self.log, PostgresEventLog):
+                pending = self.log.pending_query_sync(limit=limit)
+                if full_refresh:
+                    matching_ids = tuple(item.id for item in pending)
+                elif memory_ids is not None:
+                    memory_id_set = set(memory_ids)
+                    matching_ids = tuple(
+                        item.id for item in pending if item.memory_id in memory_id_set
+                    )
+                else:
+                    matching_ids = ()
+                self.log.mark_query_sync_processed(matching_ids)
+                processed = len(matching_ids)
+            else:
+                processed = (
+                    len(memory_ids) if memory_ids is not None and not full_refresh else len(state_map)
+                )
+        self._emit_audit(
+            {
+                "type": "memory.query_sync",
+                "query_sync_mode": sync_mode,
+                "outbox_rows_processed": processed,
+            }
+        )
+        return processed
+
     def sync_query_backend(
         self,
         *,
+        full_refresh: bool = False,
+        limit: int | None = None,
         memory_ids: tuple[str, ...] | None = None,
-    ) -> None:
-        self._refresh_query_backend(memory_ids=memory_ids)
+    ) -> int:
+        return self.sync_query_index(full_refresh=full_refresh, limit=limit, memory_ids=memory_ids)
 
     def _reference_tick(self, state_map: Mapping[str, MemoryState]) -> int:
         if not state_map:
@@ -740,10 +847,16 @@ class MemoryRuntime:
         expected_tenant_id = expected_tenant_id or self._expected_tenant_id(trusted_context)
         if expected_tenant_id is not None and event.tenant_id != expected_tenant_id:
             raise ValueError("tenant mismatch between trusted context and event payload")
+        pre_state_map = self.state_map()
         self._validate_dynamic_event(event)
-        self.log.append(event, signature_verifier=self._signature_verifier)
+        query_sync_tasks = self._query_sync_tasks_for_event(event, pre_state_map=pre_state_map)
+        self.log.append(
+            event,
+            signature_verifier=self._signature_verifier,
+            query_sync_tasks=query_sync_tasks,
+        )
         self._invalidate_read_model_cache()
-        self._refresh_query_backend(memory_ids=(event.memory_id,))
+        self.sync_query_index(memory_ids=tuple(task.memory_id for task in query_sync_tasks))
         return event
 
     def import_records(
@@ -777,9 +890,12 @@ class MemoryRuntime:
             default_tick=default_tick,
             tenant_id=effective_tenant_id,
             signature_verifier=self._signature_verifier,
+            query_sync_task_builder=self._query_sync_tasks_for_event,
         )
         self._invalidate_read_model_cache()
-        self._refresh_query_backend(memory_ids=tuple(dict.fromkeys(event.memory_id for event in events)))
+        self.sync_query_index(
+            memory_ids=tuple(dict.fromkeys(event.memory_id for event in events))
+        )
         return events
 
     def query(
@@ -797,6 +913,10 @@ class MemoryRuntime:
         ctx = self._build_policy_context(policy_context, trusted_context=trusted_context)
         semantic_query = bool(query_text and str(query_text).strip())
         backend_name = self._query_index().name if semantic_query else None
+        query_sync_mode = self._query_sync_mode()
+        query_sync_lag_count = (
+            self.log.query_sync_lag_count() if semantic_query and query_sync_mode == "durable_outbox" else None
+        )
         gate = evaluate_query_gate(ctx)
         if not gate.allowed:
             denied = {
@@ -835,6 +955,8 @@ class MemoryRuntime:
                     "candidate_count": 0,
                     "stale_index_filtered": 0,
                     "backend_latency_ms": None,
+                    "query_sync_mode": query_sync_mode,
+                    "query_sync_lag_count": query_sync_lag_count,
                 }
             )
             return denied
@@ -1048,6 +1170,8 @@ class MemoryRuntime:
                 "candidate_count": candidate_count if semantic_query else None,
                 "stale_index_filtered": stale_index_filtered if semantic_query else None,
                 "backend_latency_ms": backend_latency_ms if semantic_query else None,
+                "query_sync_mode": query_sync_mode,
+                "query_sync_lag_count": query_sync_lag_count,
             }
         )
         return response
@@ -2060,6 +2184,10 @@ class MemoryRuntime:
 def open_runtime(
     *,
     db_path: str | Path | None = None,
+    event_backend: str | None = None,
+    event_backend_dsn: str | None = None,
+    event_backend_schema: str = "amf_core",
+    bootstrap_event_backend: bool = False,
     keyring: Mapping[str, bytes | str | Mapping[str, Any] | KeyMaterial] | None = None,
     audit_sink: AuditSink | None = None,
     query_backend: str = "inmemory",
@@ -2069,10 +2197,31 @@ def open_runtime(
     embedder: TextEmbedder | None = None,
 ) -> MemoryRuntime:
     log: EventLog
-    if db_path is None:
+    if event_backend is None:
+        if db_path is None:
+            log = AppendOnlyEventLog()
+        else:
+            log = SQLiteEventLog(db_path=db_path)
+    elif event_backend == "memory":
+        if db_path is not None:
+            raise ValueError("db_path cannot be combined with event_backend='memory'")
         log = AppendOnlyEventLog()
-    else:
+    elif event_backend == "sqlite":
+        if db_path is None:
+            raise ValueError("db_path is required when event_backend='sqlite'")
         log = SQLiteEventLog(db_path=db_path)
+    elif event_backend == "postgres":
+        if db_path is not None:
+            raise ValueError("db_path cannot be combined with event_backend='postgres'")
+        if event_backend_dsn is None:
+            raise ValueError("event_backend_dsn is required when event_backend='postgres'")
+        log = PostgresEventLog(
+            event_backend_dsn,
+            schema=event_backend_schema,
+            bootstrap=bootstrap_event_backend,
+        )
+    else:
+        raise ValueError("event_backend must be one of memory, sqlite, or postgres")
     runtime = MemoryRuntime(
         log=log,
         keyring=dict(keyring or {}),
@@ -2083,6 +2232,4 @@ def open_runtime(
         bootstrap_query_backend=bootstrap_query_backend,
         embedder=embedder,
     )
-    if query_backend == "pgvector":
-        runtime.sync_query_backend()
     return runtime

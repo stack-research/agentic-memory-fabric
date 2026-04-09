@@ -10,21 +10,60 @@ from .events import EventEnvelope
 SignatureVerifier = Callable[[EventEnvelope], str]
 
 
+@dataclass(frozen=True)
+class QuerySyncTask:
+    tenant_id: str
+    memory_id: str
+    indexed_event_id: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class PendingQuerySync:
+    id: int
+    tenant_id: str
+    memory_id: str
+    indexed_event_id: str
+    reason: str
+
+
 class EventLog(Protocol):
     def append(
         self,
         event: EventEnvelope,
         *,
         signature_verifier: SignatureVerifier | None = None,
+        query_sync_tasks: tuple[QuerySyncTask, ...] | None = None,
     ) -> None: ...
 
     def all_events(self) -> tuple[EventEnvelope, ...]: ...
+
+    def all_events_with_signature_states(self) -> tuple[tuple[EventEnvelope, ...], dict[str, str]]: ...
+
+    def events_in_sequence_range(self, *, start: int, end: int) -> tuple[EventEnvelope, ...]: ...
+
+    def events_for_memory(self, memory_id: str, tenant_id: str | None) -> tuple[EventEnvelope, ...]: ...
+
+    def events_for_memory_in_sequence_range(
+        self,
+        memory_id: str,
+        tenant_id: str | None,
+        *,
+        start: int,
+        end: int,
+    ) -> tuple[EventEnvelope, ...]: ...
 
     def __len__(self) -> int: ...
 
     def signature_states(self) -> dict[str, str]: ...
 
     def signature_state_for_event(self, event_id: str) -> str | None: ...
+
+    def pending_query_sync(self, *, limit: int | None = None) -> tuple[PendingQuerySync, ...]: ...
+
+    def mark_query_sync_processed(self, row_ids: tuple[int, ...]) -> None: ...
+
+    def query_sync_lag_count(self) -> int: ...
 
 
 @dataclass
@@ -38,7 +77,9 @@ class AppendOnlyEventLog:
         event: EventEnvelope,
         *,
         signature_verifier: SignatureVerifier | None = None,
+        query_sync_tasks: tuple[QuerySyncTask, ...] | None = None,
     ) -> None:
+        del query_sync_tasks
         expected_sequence = len(self._events) + 1
         if event.sequence != expected_sequence:
             raise ValueError(
@@ -55,6 +96,14 @@ class AppendOnlyEventLog:
 
     def all_events(self) -> tuple[EventEnvelope, ...]:
         return tuple(self._events)
+
+    def all_events_with_signature_states(self) -> tuple[tuple[EventEnvelope, ...], dict[str, str]]:
+        return self.all_events(), self.signature_states()
+
+    def events_in_sequence_range(self, *, start: int, end: int) -> tuple[EventEnvelope, ...]:
+        if start < 1 or end < start:
+            raise ValueError("sequence range must be (start>=1, end>=start)")
+        return tuple(event for event in self._events if start <= event.sequence <= end)
 
     def __len__(self) -> int:
         return len(self._events)
@@ -78,6 +127,17 @@ class AppendOnlyEventLog:
                 continue
             out.append(event)
         return tuple(out)
+
+    def pending_query_sync(self, *, limit: int | None = None) -> tuple[PendingQuerySync, ...]:
+        del limit
+        return ()
+
+    def mark_query_sync_processed(self, row_ids: tuple[int, ...]) -> None:
+        del row_ids
+        return
+
+    def query_sync_lag_count(self) -> int:
+        return 0
 
     def events_for_memory_in_sequence_range(
         self,

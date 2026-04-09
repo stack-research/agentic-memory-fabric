@@ -10,7 +10,8 @@ from typing import Any, Callable, Mapping
 from urllib.parse import urlparse
 
 from .crypto import KeyMaterial
-from .query_index import QueryBackendError, TextEmbedder
+from .postgres_support import PostgresBackendError
+from .query_index import QueryBackendError, QuerySyncError, TextEmbedder
 from .runtime import MemoryRuntime, open_runtime
 
 
@@ -372,7 +373,7 @@ def create_http_handler(app: ServiceApp):
                     body,
                     headers=headers,
                 )
-            except QueryBackendError as exc:  # pragma: no cover - defensive boundary
+            except (QueryBackendError, QuerySyncError, PostgresBackendError) as exc:  # pragma: no cover - defensive boundary
                 status, payload = HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(exc)}
             except Exception as exc:  # pragma: no cover - defensive boundary
                 status, payload = HTTPStatus.BAD_REQUEST, {"error": str(exc)}
@@ -401,6 +402,10 @@ def run_http_server(
     port: int = 8000,
     runtime: MemoryRuntime | None = None,
     db_path: str | None = None,
+    event_backend: str | None = None,
+    event_backend_dsn: str | None = None,
+    event_backend_schema: str = "amf_core",
+    bootstrap_event_backend: bool = False,
     keyring: Mapping[str, bytes | str | Mapping[str, Any] | KeyMaterial] | None = None,
     audit_sink: Callable[[Mapping[str, Any]], None] | None = None,
     query_backend: str = "inmemory",
@@ -413,6 +418,10 @@ def run_http_server(
         raise ValueError("provide either runtime or db_path, not both")
     app_runtime = runtime or open_runtime(
         db_path=db_path,
+        event_backend=event_backend,
+        event_backend_dsn=event_backend_dsn,
+        event_backend_schema=event_backend_schema,
+        bootstrap_event_backend=bootstrap_event_backend,
         keyring=keyring,
         audit_sink=audit_sink,
         query_backend=query_backend,

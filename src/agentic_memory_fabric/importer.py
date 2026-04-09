@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Any, Iterable, Mapping
+from typing import Any, Callable, Iterable, Mapping
 from uuid import NAMESPACE_URL, uuid5
 
 from .events import Actor, EventEnvelope, canonical_payload_hash
-from .log import EventLog, SignatureVerifier
+from .log import EventLog, QuerySyncTask, SignatureVerifier
 
 
 def _deterministic_event_id(*, memory_id: str, sequence: int, payload_hash: str, source_ref: str) -> str:
@@ -116,6 +116,7 @@ def append_imported_records(
     default_tick: int | None = None,
     tenant_id: str | None = None,
     signature_verifier: SignatureVerifier | None = None,
+    query_sync_task_builder: Callable[[EventEnvelope], tuple[QuerySyncTask, ...]] | None = None,
 ) -> tuple[EventEnvelope, ...]:
     """Import records and append them to the event log as imported events."""
     events = import_records(
@@ -127,5 +128,12 @@ def append_imported_records(
         tenant_id=tenant_id,
     )
     for event in events:
-        log.append(event, signature_verifier=signature_verifier)
+        tasks = None
+        if query_sync_task_builder is not None:
+            tasks = tuple(query_sync_task_builder(event))
+        log.append(
+            event,
+            signature_verifier=signature_verifier,
+            query_sync_tasks=tasks,
+        )
     return events

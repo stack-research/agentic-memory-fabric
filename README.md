@@ -22,6 +22,20 @@ In this causal memory fabric, events shape memory spacetime; time and integrity 
 
 When using a SQLite-backed store (`open_runtime(db_path=...)`), `memory_id` and `tenant_id` are stored as indexed columns on each row. **`explain`** and **`export_provenance`** with a `memory_id` filter load only matching events (ordered by sequence) instead of scanning the full log. Replay and `state_map` still read the complete append-only history.
 
+## Runtime storage modes
+
+AMF now supports three event-log modes:
+
+- In-memory: default when `open_runtime()` is called without `db_path` or `event_backend`
+- SQLite: local embedded durability via `open_runtime(db_path=...)` or `event_backend="sqlite"`
+- Postgres: service-mode durability via `event_backend="postgres"` with AWS RDS for PostgreSQL as the primary target
+
+For service deployments, the intended steady-state split is:
+
+- Postgres event log in `amf_core`-style schema
+- pgvector semantic query index in `amf_query`-style schema
+- the same DSN family may be used for both, but they remain separate logical backends
+
 ## Immediate MVP Outcomes
 
 - Stable event envelope and append-only log primitives.
@@ -232,7 +246,10 @@ Example runtime startup against Postgres or RDS:
 from agentic_memory_fabric.runtime import open_runtime
 
 runtime = open_runtime(
-    db_path="events.db",
+    event_backend="postgres",
+    event_backend_dsn="postgresql://amf:amf@127.0.0.1:5432/amf",
+    event_backend_schema="amf_core",
+    bootstrap_event_backend=True,
     query_backend="pgvector",
     query_backend_dsn="postgresql://amf:amf@127.0.0.1:5432/amf",
     query_backend_schema="amf_query",
@@ -244,22 +261,27 @@ Example CLI startup:
 
 ```bash
 python3 -m agentic_memory_fabric.cli \
-  --db events.db \
   --tenant-id tenant-alpha \
+  --event-backend postgres \
+  --event-backend-dsn 'postgresql://amf:amf@127.0.0.1:5432/amf' \
+  --event-backend-schema amf_core \
+  --bootstrap-event-backend \
   --query-backend pgvector \
   --query-backend-dsn 'postgresql://amf:amf@127.0.0.1:5432/amf' \
+  --query-backend-schema amf_query \
   --bootstrap-query-backend \
   query \
   --query-text "memory fabric"
 ```
 
-If `--query-backend pgvector` or `query_backend="pgvector"` is set and the backend is unavailable, AMF fails closed. It does not silently fall back to the in-memory semantic index.
+If `--event-backend postgres` or `event_backend="postgres"` is set and the backend is unavailable, AMF fails closed. It does not silently fall back to SQLite or memory. The same fail-closed rule applies to `--query-backend pgvector`.
 
 ## Audit Hooks
 
 Runtime operations can emit structured audit records through an optional sink callback.
 Current event types include:
 - `memory.query`
+- `memory.query_sync`
 - `memory.get`
 - `memory.peek`
 - `memory.link`

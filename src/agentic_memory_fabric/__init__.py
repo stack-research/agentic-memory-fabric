@@ -39,7 +39,7 @@ from .graph import (
     reinforcement_bonus,
 )
 from .importer import append_imported_records, import_records
-from .log import AppendOnlyEventLog, EventLog
+from .log import AppendOnlyEventLog, EventLog, PendingQuerySync, QuerySyncTask
 from .policy import (
     ATTESTATION_TRUST_LEVELS,
     PolicyContext,
@@ -48,6 +48,8 @@ from .policy import (
     evaluate_query_gate,
     evaluate_retrieval_policy,
 )
+from .postgres_store import PostgresEventLog
+from .postgres_support import PostgresBackendError
 from .promotion import PromotionAssessment, compute_promotion_eligible, compute_promotion_score
 from .pgvector_backend import PgVectorBackendConfig, PgVectorQueryBackend
 from .query_index import (
@@ -59,6 +61,7 @@ from .query_index import (
     QueryBackendError,
     QueryIndex,
     QueryIndexEntry,
+    QuerySyncError,
     SearchHit,
     TextEmbedder,
 )
@@ -117,8 +120,11 @@ __all__ = [
     "KEY_STATUS_REVOKED",
     "MemoryState",
     "InMemoryQueryIndex",
+    "PendingQuerySync",
     "PolicyContext",
     "PolicyDecision",
+    "PostgresBackendError",
+    "PostgresEventLog",
     "PromotionAssessment",
     "PgVectorBackendConfig",
     "PgVectorQueryBackend",
@@ -128,6 +134,8 @@ __all__ = [
     "QueryIndexEntry",
     "QueryGateDecision",
     "QueryAuditSummary",
+    "QuerySyncError",
+    "QuerySyncTask",
     "RetrievalRecord",
     "SUPPORTED_SIGNATURE_ALGS",
     "SignatureState",

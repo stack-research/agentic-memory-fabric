@@ -15,6 +15,7 @@ if str(pathlib.Path(__file__).resolve().parent) not in sys.path:
 from agentic_memory_fabric.cli import run_cli
 from agentic_memory_fabric.crypto import sign_event
 from agentic_memory_fabric.events import EventEnvelope, canonical_payload_hash
+from agentic_memory_fabric.postgres_support import PostgresBackendError
 from agentic_memory_fabric.query_index import QueryBackendError
 from ed25519_utils import sign_event_ed25519
 
@@ -236,6 +237,21 @@ class CliTests(unittest.TestCase):
                     "query",
                     "--query-text",
                     "alpha",
+                ],
+                stdout=io.StringIO(),
+            )
+
+    def test_cli_postgres_event_backend_fails_closed_without_driver(self) -> None:
+        with self.assertRaises(PostgresBackendError):
+            run_cli(
+                [
+                    "--tenant-id",
+                    "tenant-alpha",
+                    "--event-backend",
+                    "postgres",
+                    "--event-backend-dsn",
+                    "postgresql://amf:amf@127.0.0.1:5432/amf",
+                    "query",
                 ],
                 stdout=io.StringIO(),
             )

@@ -10,6 +10,7 @@ if str(SRC_ROOT) not in sys.path:
 
 from agentic_memory_fabric.crypto import sign_event
 from agentic_memory_fabric.events import EventEnvelope, canonical_payload_hash
+from agentic_memory_fabric.postgres_support import PostgresBackendError
 from agentic_memory_fabric.query_index import InMemoryQueryIndex, QueryBackendError, QueryIndexEntry
 from agentic_memory_fabric.replay import replay_events
 from agentic_memory_fabric.runtime import MemoryRuntime, open_runtime
@@ -532,6 +533,13 @@ class RuntimeReadModelTests(unittest.TestCase):
             open_runtime(
                 query_backend="pgvector",
                 query_backend_dsn="postgresql://amf:amf@127.0.0.1:5432/amf",
+            )
+
+    def test_postgres_event_backend_requires_driver_and_fails_closed(self) -> None:
+        with self.assertRaises(PostgresBackendError):
+            open_runtime(
+                event_backend="postgres",
+                event_backend_dsn="postgresql://amf:amf@127.0.0.1:5432/amf",
             )
 
     def test_semantic_query_audit_includes_backend_metadata(self) -> None:

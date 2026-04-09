@@ -2,41 +2,18 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from typing import Any, Mapping
 
+from .postgres_support import PostgresBackendError, load_postgres_driver, quote_identifier
 from .query_index import QueryBackendError, SearchHit, TextEmbedder
 
 
-_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 QUERY_INDEX_TABLE = "query_index"
-
-
-def _quote_identifier(value: str) -> str:
-    if not _IDENTIFIER_RE.match(value):
-        raise ValueError("query backend schema must be a valid SQL identifier")
-    return '"' + value.replace('"', '""') + '"'
 
 
 def _vector_literal(values: list[float]) -> str:
     return "[" + ",".join(f"{value:.6f}" for value in values) + "]"
-
-
-def _load_postgres_driver() -> tuple[Any, str]:
-    try:
-        import psycopg  # type: ignore
-
-        return psycopg, "psycopg"
-    except ModuleNotFoundError:
-        try:
-            import psycopg2  # type: ignore
-
-            return psycopg2, "psycopg2"
-        except ModuleNotFoundError as exc:
-            raise QueryBackendError(
-                "pgvector backend requires psycopg or psycopg2; install a PostgreSQL driver"
-            ) from exc
 
 
 @dataclass(frozen=True)
@@ -63,8 +40,11 @@ class PgVectorQueryBackend:
         self._schema = schema
         self._embedder = embedder
         self._bootstrap = bootstrap
-        self._driver, self._driver_name = _load_postgres_driver()
-        self._schema_sql = _quote_identifier(schema)
+        try:
+            self._driver, self._driver_name = load_postgres_driver()
+        except PostgresBackendError as exc:
+            raise QueryBackendError(str(exc)) from exc
+        self._schema_sql = quote_identifier(schema, field_name="query backend schema")
         self._table_sql = f"{self._schema_sql}.{QUERY_INDEX_TABLE}"
         self._connect()
         if bootstrap:
